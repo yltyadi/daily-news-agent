@@ -1,0 +1,166 @@
+# ==============================================================================
+# Конфигурация новостного агента (Daily & Monthly News Agent)
+# Меняйте расписание, каналы и настройки прямо в этом файле.
+# После изменения времени в блоке schedule выполните:
+#   python -m src.main --sync-schedule
+# ==============================================================================
+
+schedule:
+  timezone: "Asia/Almaty"
+  daily_time: "21:00"               # Во сколько запускать ежедневный дайджест каждый день
+  monthly_day: 1                    # Какого числа месяца запускать месячный отчёт (1 = 1-е число)
+  monthly_time: "09:00"             # Во сколько запускать месячный отчёт
+
+general:
+  lookback_hours: 24                # За сколько часов собирать посты и письма в ежедневном режиме
+  monthly_lookback_days: 32         # За сколько дней брать дайджесты в ежемесячном режиме
+  language: "ru"
+  save_local_markdown: true
+  daily_digests_dir: "data/daily_digests"
+
+# Настройки моделей и тарификации (в USD за 1 млн токенов)
+# Для экономии ~85% бюджета без потери качества:
+# - router_model (gemini-3.1-flash-lite) быстро фильтрует спам и распределяет посты по 8 категориям
+# - model (gemini-3.8-flash) пишет глубокую аналитику по каждой категории и ищет связи
+llm:
+  router_model: "gemini-3.1-flash-lite"
+  router_thinking_level: "minimal"
+  router_pricing_per_1m_tokens:
+    input_usd: 0.25
+    output_usd: 1.50
+    cached_input_usd: 0.025
+
+  model: "gemini-3.8-flash"
+  thinking_level: "low"             # minimal | low | medium | high
+  temperature: 0.2
+  pricing_per_1m_tokens:
+    input_usd: 0.75                 # $0.75 / 1M input tokens для gemini-3.8-flash
+    output_usd: 3.75                # $3.75 / 1M output + thinking tokens для gemini-3.8-flash
+    cached_input_usd: 0.075
+
+# Источники: Telegram-каналы (читаются ВСЕ посты за последние 24 часа + вложенные статьи)
+telegram:
+  enabled: true
+  read_nested_articles: true        # Читать статьи внутри постов (telegra.ph, внешние сайты СМИ, вложенные посты)
+  channels:
+    - "https://t.me/finmentorkz"
+    - "https://t.me/bloomeconomy"
+    - "https://t.me/samfromusa"
+    - "https://t.me/habr_com"
+    - "https://t.me/brieflyru"
+    - "https://t.me/timesru"
+    - "https://t.me/kazservice"
+    - "https://t.me/aqorda_resmi"
+    - "https://t.me/EnergyAnalytics"
+    - "https://t.me/oilgazKZ"
+    - "https://t.me/tengenomika"
+    - "https://t.me/LSnews"
+    - "https://t.me/vlastkz"
+    - "https://t.me/prokadrykz"
+    - "https://t.me/prg_buh"
+    - "https://t.me/kazakh_trader"
+    - "https://t.me/Petro_council"
+    - "https://t.me/commentariuskz"
+    - "https://t.me/metalsesgtrends"
+    - "https://t.me/ForbesKaz"
+    - "https://t.me/kaztag_tg"
+    - "https://t.me/tengri_live"
+    - "https://t.me/qztrd"
+    - "https://t.me/Economykz_org"
+    - "https://t.me/atamekenbusiness"
+    - "https://t.me/kursivm"
+    - "https://t.me/prg_jur"
+    - "https://t.me/halykfinance"
+    - "https://t.me/zakonkz"
+    - "https://t.me/ulysmediatg"
+    - "https://t.me/profile_newzzz"
+    - "https://t.me/NRG_monitor"
+    - "https://t.me/monocle_media"
+    - "https://t.me/ba_sa_analytics"
+    - "https://t.me/tele_eve"
+    - "https://t.me/KASEofficial"
+    - "https://t.me/globalenergyprize"
+    - "https://t.me/FINANCEkaz"
+    - "https://t.me/papagaz"
+    - "https://t.me/themovchans"
+    - "https://t.me/KZgovernment"
+    - "https://t.me/FREEDOMFINANCE"
+    - "https://t.me/minpromstroykz"
+    - "https://t.me/analytics_secrets"
+    - "https://t.me/biznesshtabalmaty"
+    - "https://t.me/protenge_kz"
+    - "https://t.me/ekxkz"
+    - "https://t.me/inznan"
+    - "https://t.me/findKZ"
+    - "https://t.me/tradereportkz"
+    - "https://t.me/product_and_project"
+    - "https://t.me/secrets_hr"
+    - "https://t.me/manualanomics"
+    - "https://t.me/financeview"
+    - "https://t.me/channel4brainru"
+    - "https://t.me/accwhisper"
+    - "https://t.me/nationalbankkz"
+    - "https://t.me/bigideasmag"
+    - "https://t.me/RAutomation"
+
+# Источник: Почта Gmail (через стандартный IMAP за последние 24 часа)
+gmail:
+  enabled: true
+  imap_host: "imap.gmail.com"
+  imap_port: 993
+  folder: "INBOX"
+  allowed_senders: []
+
+# Доставка готового отчёта
+delivery:
+  publish_telegraph: true
+  send_telegram_bot: true
+  send_email_digest: true
+  smtp_host: "smtp.gmail.com"
+  smtp_port: 465
+
+# 8 целевых категорий (каждая имеет свой независимый агент и skill-файл в папке skills/)
+categories:
+  - slug: "energetika"
+    title: "⚡ Энергетика"
+    description: "Электроэнергетика, генерация (ТЭЦ, ГРЭС, ВИЭ, АЭС), сети (KEGOC, РЭК), нефть, газ, уголь, тарифы на энергию, дефицит/профицит мощностей."
+    skill_file: "skills/01_energetika.md"
+
+  - slug: "voda"
+    title: "💧 Вода"
+    description: "Водные ресурсы, водохранилища, трансграничные реки, ирригация, водоканалы, ЖКХ водоснабжения, тарифы на воду, засуха, паводки, экология воды."
+    skill_file: "skills/02_voda.md"
+
+  - slug: "it"
+    title: "💻 IT (общая глобальная движуха)"
+    description: "Глобальные и локальные тренды IT, релизы AI-моделей и техногигантов, облака, кибербезопасность, стартапы, венчур, Astana Hub, цифровизация."
+    skill_file: "skills/03_it.md"
+
+  - slug: "avtomatizatsiya"
+    title: "🤖 Автоматизация (промышленность и идеи)"
+    description: "Конкретные примеры автоматизации в промышленности, энергетике, логистике и бизнесе (АСУ ТП, SCADA, ERP, MES, IIoT, роботы, AI-агенты) + практические идеи для внедрения."
+    skill_file: "skills/04_avtomatizatsiya.md"
+
+  - slug: "finansy"
+    title: "📈 Финансы (акции, МФЦА, инвестирование)"
+    description: "Фондовый рынок (KASE, AIX и мировые рынки), акции, облигации, дивиденды, специальные режимы и новости МФЦА (AIFC), инвестиционные фонды, банки, ставки НБК, курс тенге."
+    skill_file: "skills/05_finansy.md"
+
+  - slug: "nalogi"
+    title: "🧾 Налоги (законодательство и практика)"
+    description: "Налоговый кодекс, реформы НДС, КПН, ИПН, специальные налоговые режимы, инициативы КГД МФ РК, налоговое администрирование, проверки, отчётность."
+    skill_file: "skills/06_nalogi.md"
+
+  - slug: "yuridicheskie"
+    title: "⚖️ Юридические изменения в законодательстве"
+    description: "Новые законы, указы, НПА, проекты мажилиса и сената, проверки и акты прокуратуры, антимонопольное регулирование, судебные прецеденты, комплаенс."
+    skill_file: "skills/07_yuridicheskie.md"
+
+  - slug: "svyaz_transport"
+    title: "📡 Связь и транспорт (Казахтелеком, перевозки, трубопроводы)"
+    description: "Телекоммуникации (Казахтелеком, операторы связи, 5G, интернет-инфраструктура), ж/д и автоперевозки (КТЖ, ТМТМ / Средний коридор), авиация, порты, нефте- и газопроводы (КазТрансОйл, КТК)."
+    skill_file: "skills/08_svyaz_transport.md"
+
+cross_links_skill_file: "skills/99_cross_links.md"
+monthly_skill_file: "skills/100_monthly_summary.md"
+usage_history_file: "data/usage_history.json"
