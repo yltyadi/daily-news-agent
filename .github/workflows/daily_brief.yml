@@ -1,13 +1,13 @@
 name: Daily & Monthly News Brief
 
 on:
-  schedule:
-    # 1. Ежедневный запуск: каждый день в 21:00 (Asia/Almaty)
-    - cron: "0 16 * * *"
-    # 2. Ежемесячный запуск: 1-го числа каждого месяца в 09:00 (Asia/Almaty)
-    - cron: "0 4 1 * *"
+  # Запуск осуществляется ровно по секундам через cron-job.org (workflow_dispatch),
+  # поэтому внутренний (задерживающийся) cron GitHub Actions отключён, чтобы не было дублирующих запусков.
+  # schedule:
+  #   - cron: "0 14 * * *"
+  #   - cron: "0 4 1 * *"
 
-  # 3. Ручной запуск или точный вызов по секундам через cron-job.org
+  # Вызов по секундам через cron-job.org или вручную из вкладки Actions
   workflow_dispatch:
     inputs:
       mode:
@@ -43,7 +43,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Determine run mode (daily at 21:00 Almaty vs monthly on 1st at 09:00 Almaty)
+      - name: Determine run mode (daily at 19:00 Almaty vs monthly on 1st at 09:00 Almaty)
         id: detect_mode
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.mode }}" ]; then
