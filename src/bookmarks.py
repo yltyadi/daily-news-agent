@@ -466,6 +466,22 @@ async def sync_telegram_bookmarks_once(config: AppConfig) -> int:
             processed_count += 1
             continue
 
+        # 2b. Команда очистки всей базы заметок (/clear)
+        if text.lower() in {"/clear", "/clear_bookmarks", "очистить базу"}:
+            store.items = []
+            changed = True
+            processed_count += 1
+            kb_url = await publish_or_update_bookmarks_telegraph(config, store)
+            await _send_bot_reply(
+                config,
+                chat_id,
+                (
+                    "🗑 <b>База заметок полностью очищена (0 сюжетов).</b>\n\n"
+                    f"⚡ <b><a href=\"{html.escape(kb_url, quote=True)}\">ОТКРЫТЬ БАЗУ ЗАМЕТОК (Instant View)</a></b>"
+                ),
+            )
+            continue
+
         # 3. Ручное сохранение по команде вида: "save it 9 Моя заметка" или "/save it 9 Моя заметка"
         m_manual = re.match(
             r"^(?:/save|save|сохранить)\s+([a-z_]+)\s+(\d+)(?:\s+(.+))?$",
