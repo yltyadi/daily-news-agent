@@ -1,5 +1,5 @@
 {
-  "last_update_id": 52975748,
+  "last_update_id": 52975749,
   "bot_username": "dy_daily_news_digest_bot",
   "telegraph_access_token": "e4899274966dce03fc93b9762150864cc4fce727c286a51245eba8abadd6",
   "telegraph_url": "https://telegra.ph/Moya-baza-sohranyonnyh-novostej-i-zametok-0-10-23",
@@ -36,6 +36,33 @@
         {
           "label": "@habr_com (Хабр / MWS)",
           "url": "https://u.habr.com/3xA32"
+        }
+      ],
+      "user_note": ""
+    },
+    {
+      "bookmark_id": "20261025_energetika_8",
+      "saved_at": "2026-10-26 14:00 UTC",
+      "digest_date": "2026-10-25",
+      "category_slug": "energetika",
+      "category_title": "⚡ Энергетика",
+      "topic_index": 8,
+      "headline": "Коммерциализация газификации бурого угля: Минэнерго США выдало лицензию на технологию TRIG",
+      "summary_paragraphs": [
+        "Министерство энергетики США впервые предоставило неисключительную лицензию на технологию интегрированной газификации угля Transport Integrated Gasification (TRIG) для энергетического сектора компании Latitude Energy Services. Технология базируется на более низких температурах и сухом золоудалении, что снижает абразивный износ и повышает надежность оборудования.",
+        "Latitude Energy Services уже подписала меморандум о внедрении первого промышленного проекта по переработке низкосортного угля в Индонезии. Технология открывает перспективы глубокой углехимии и экологичной генерации для рынков с запасами дешевого лигнита (Китай, Индонезия, страны Центральной Азии)."
+      ],
+      "key_figures_and_facts": [
+        "Технология: TRIG (Transport Integrated Gasification)",
+        "Лицензиар/лицензиат: Министерство энергетики США / Latitude Energy Services",
+        "Особенности: сухое золоудаление, низкотемпературный процесс",
+        "Первый проект: подписан меморандум с Индонезией"
+      ],
+      "implications_or_context": "Развитие TRIG дает угледобывающим регионам альтернативный вектор монетизации низкосортного угля без прямого сжигания с получением синтез-газа для энергетики и химпрома.",
+      "sources": [
+        {
+          "label": "@globalenergyprize (Глобальная энергия)",
+          "url": "https://t.me/globalenergyprize/13370"
         }
       ],
       "user_note": ""
