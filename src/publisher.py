@@ -18,6 +18,7 @@ from src.bookmarks import (
     get_or_fetch_bot_username,
     load_bookmarks_store,
     publish_or_update_bookmarks_telegraph,
+    publish_or_update_ideas_telegraph,
 )
 from src.config import AppConfig, ROOT_DIR
 from src.cost_tracker import UsageSummaryStats, format_usage_text_ru
@@ -148,17 +149,30 @@ def _build_telegraph_nodes_for_section(
 
     if sec.report.automation_ideas:
         nodes.append({"tag": "h4", "children": ["💡 Прикладные идеи для автоматизации"]})
-        for idea in sec.report.automation_ideas:
-            nodes.append(
-                {
-                    "tag": "p",
-                    "children": [
-                        {"tag": "strong", "children": [f"• {idea.title} ({idea.target_sector_or_process}): "]},
-                        f"{idea.proposed_solution} → Эффект: {idea.expected_impact} ",
-                        {"tag": "em", "children": [f"[Основано на: {idea.inspired_by_source}]"]},
-                    ],
-                }
-            )
+        for idea_idx, idea in enumerate(sec.report.automation_ideas, start=1):
+            idea_children: list[Any] = [
+                {"tag": "strong", "children": [f"• {idea_idx}. {idea.title} ({idea.target_sector_or_process}): "]},
+                f"{idea.proposed_solution} → Эффект: {idea.expected_impact} ",
+                {"tag": "em", "children": [f"[Основано на: {idea.inspired_by_source}]"]},
+            ]
+            if bot_username and date_compact:
+                save_idea_url = f"https://t.me/{bot_username}?start=saveidea_{date_compact}_{sec.slug}_{idea_idx}"
+                idea_children.extend(
+                    [
+                        "   •   ",
+                        {
+                            "tag": "strong",
+                            "children": [
+                                {
+                                    "tag": "a",
+                                    "attrs": {"href": save_idea_url},
+                                    "children": [f"💡 Сохранить идею #{idea_idx} в Базу Идей"],
+                                }
+                            ],
+                        },
+                    ]
+                )
+            nodes.append({"tag": "p", "children": idea_children})
 
     nodes.append({"tag": "hr"})
     return nodes
@@ -169,6 +183,7 @@ def _build_telegraph_nodes(
     stats: UsageSummaryStats,
     bot_username: str = "",
     bookmarks_url: str = "",
+    ideas_url: str = "",
 ) -> list[dict[str, Any]]:
     nodes: list[dict[str, Any]] = []
     date_str = brief.generated_at.strftime("%d.%m.%Y %H:%M")
@@ -194,7 +209,23 @@ def _build_telegraph_nodes(
                         {
                             "tag": "a",
                             "attrs": {"href": bookmarks_url},
-                            "children": ["📌 Открыть Базу Заметок"],
+                            "children": ["📌 База Новостей"],
+                        }
+                    ],
+                },
+            ]
+        )
+    if ideas_url:
+        header_children.extend(
+            [
+                " | ",
+                {
+                    "tag": "strong",
+                    "children": [
+                        {
+                            "tag": "a",
+                            "attrs": {"href": ideas_url},
+                            "children": ["💡 База Идей"],
                         }
                     ],
                 },
@@ -557,6 +588,8 @@ async def publish_to_telegraph(
     bot_username = await get_or_fetch_bot_username(config, store)
     if not store.telegraph_url:
         await publish_or_update_bookmarks_telegraph(config, store)
+    if not store.ideas_telegraph_url:
+        await publish_or_update_ideas_telegraph(config, store)
     date_str = brief.generated_at.strftime("%d.%m.%Y")
     base_title = f"Ежедневная аналитическая сводка — {date_str}"
     nodes = _build_telegraph_nodes(
@@ -564,6 +597,7 @@ async def publish_to_telegraph(
         stats,
         bot_username=bot_username,
         bookmarks_url=store.telegraph_url,
+        ideas_url=store.ideas_telegraph_url,
     )
     return await _publish_nodes_to_telegraph(config, base_title, nodes)
 
@@ -642,7 +676,11 @@ async def send_telegram_bot_digest(
         store = load_bookmarks_store()
         if store.telegraph_url:
             body_lines.append(
-                f"📌 <b><a href=\"{html.escape(store.telegraph_url, quote=True)}\">МОЯ БАЗА СОХРАНЁННЫХ ЗАМЕТОК ({len(store.items)} шт.)</a></b>"
+                f"📌 <b><a href=\"{html.escape(store.telegraph_url, quote=True)}\">МОЯ БАЗА СОХРАНЁННЫХ НОВОСТЕЙ ({len(store.items)} шт.)</a></b>"
+            )
+        if store.ideas_telegraph_url:
+            body_lines.append(
+                f"💡 <b><a href=\"{html.escape(store.ideas_telegraph_url, quote=True)}\">МОЯ БАЗА ИДЕЙ АВТОМАТИЗАЦИИ ({len(store.idea_items)} шт.)</a></b>"
             )
         body_lines.append("")
 
