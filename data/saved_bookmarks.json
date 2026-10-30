@@ -1,5 +1,5 @@
 {
-  "last_update_id": 52975752,
+  "last_update_id": 52975753,
   "bot_username": "dy_daily_news_digest_bot",
   "telegraph_access_token": "e4899274966dce03fc93b9762150864cc4fce727c286a51245eba8abadd6",
   "telegraph_url": "https://telegra.ph/Moya-baza-sohranyonnyh-novostej-i-zametok-0-10-23",
@@ -102,6 +102,21 @@
   ],
   "ideas_telegraph_url": "https://telegra.ph/Moya-baza-idej-dlya-avtomatizacii-0-10-29",
   "ideas_telegraph_path": "Moya-baza-idej-dlya-avtomatizacii-0-10-29",
-  "idea_items": [],
-  "last_saved_type": "news"
+  "idea_items": [
+    {
+      "idea_id": "20261029_avtomatizatsiya_1",
+      "saved_at": "2026-10-30 14:00 UTC",
+      "digest_date": "2026-10-29",
+      "category_slug": "avtomatizatsiya",
+      "category_title": "🤖 Автоматизация (промышленность и идеи)",
+      "idea_index": 1,
+      "title": "Предиктивный SCADA-двойник водохранилищ и гидроузлов с регулированием паводковых сбросов",
+      "target_sector_or_process": "Водное хозяйство, гидротехнические сооружения (ГТС) и каскады водохранилищ.",
+      "proposed_solution": "Развертывание трехуровневой архитектуры: нижний уровень — автономные датчики уровня, расходомеры, батиметрические сонары и метеопосты с поддержкой передачи по LoRaWAN/NB-IoT; средний уровень — промышленная SCADA с интеграцией геопространственных данных; верхний уровень — гидродинамический цифровой двойник на базе моделей физико-математического моделирования и нейросетей, рассчитывающий объемы притока на 7–14 дней вперед и автоматически отдающий уставки на гидрозатворы.",
+      "expected_impact": "Предотвращение аварийных прорывов дамб в паводковый период, снижение потерь пресной воды при ирригации на 25–35%, переход к упреждающему автоматизированному регулированию уровней бьефов.",
+      "inspired_by_source": "Поручение Премьер-министра РК О. Бектенова о создании цифровых двойников всех водохранилищ Казахстана до конца 2027 года (@KZgovernment).",
+      "user_note": ""
+    }
+  ],
+  "last_saved_type": "idea"
 }
