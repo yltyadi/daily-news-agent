@@ -575,6 +575,70 @@
           "cost_usd": 0.031506
         }
       }
+    },
+    {
+      "run_id": "run_20261101_140550",
+      "timestamp_utc": "2026-11-01T14:05:50.515779+00:00",
+      "model": "gemini-3.1-flash-lite + gemini-3.8-flash",
+      "calls_count": 15,
+      "input_tokens": 304199,
+      "output_tokens": 50618,
+      "thinking_tokens": 0,
+      "cached_tokens": 0,
+      "total_tokens": 354817,
+      "cost_usd": 0.350969,
+      "stage_breakdown": {
+        "1_router_classifier": {
+          "calls": 6,
+          "tokens": 99364,
+          "cost_usd": 0.037208
+        },
+        "2_category_voda": {
+          "calls": 1,
+          "tokens": 4908,
+          "cost_usd": 0.007986
+        },
+        "2_category_avtomatizatsiya": {
+          "calls": 1,
+          "tokens": 13731,
+          "cost_usd": 0.024254
+        },
+        "2_category_energetika": {
+          "calls": 1,
+          "tokens": 34115,
+          "cost_usd": 0.044843
+        },
+        "2_category_nalogi": {
+          "calls": 1,
+          "tokens": 15594,
+          "cost_usd": 0.024769
+        },
+        "2_category_finansy": {
+          "calls": 1,
+          "tokens": 32487,
+          "cost_usd": 0.044783
+        },
+        "2_category_it": {
+          "calls": 1,
+          "tokens": 28149,
+          "cost_usd": 0.041137
+        },
+        "2_category_svyaz_transport": {
+          "calls": 1,
+          "tokens": 26642,
+          "cost_usd": 0.03097
+        },
+        "2_category_yuridicheskie": {
+          "calls": 1,
+          "tokens": 71334,
+          "cost_usd": 0.0686
+        },
+        "3_cross_links_meta": {
+          "calls": 1,
+          "tokens": 28493,
+          "cost_usd": 0.026419
+        }
+      }
     }
   ]
 }
