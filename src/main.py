@@ -322,6 +322,12 @@ def main() -> None:
         action="store_true",
         help="Запустить мгновенный обработчик кнопки «📌 Сохранить в Базу Заметок» в реальном времени ($0.00)",
     )
+    parser.add_argument(
+        "--max-minutes",
+        type=int,
+        default=0,
+        help="Для --listen-bot: сколько минут работать до перезапуска (0 = бесконечно)",
+    )
     args = parser.parse_args()
 
     if args.sync_schedule:
@@ -335,7 +341,7 @@ def main() -> None:
 
     if args.listen_bot:
         config = load_config()
-        asyncio.run(listen_telegram_bookmarks_loop(config))
+        asyncio.run(listen_telegram_bookmarks_loop(config, max_minutes=args.max_minutes))
         sys.exit(0)
 
     if args.republish_latest:

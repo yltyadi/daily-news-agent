@@ -1,0 +1,59 @@
+name: 24/7 Bookmarks & Ideas Listener
+
+on:
+  # Запускается стабильно через cron-job.org (workflow_dispatch) каждые 5 часов,
+  # а также автоматически перезапускает сам себя по завершении 5.5-часовой сессии.
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/bookmarks_listener.yml"
+
+permissions:
+  contents: write
+  actions: write
+
+# Гарантирует, что всегда работает ровно 1 экземпляр слушателя бота
+concurrency:
+  group: telegram-bookmarks-listener
+  cancel-in-progress: true
+
+jobs:
+  listen-bookmarks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt -q
+
+      - name: Run real-time Telegram bookmark & idea listener (5.5 hours)
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          TELEGRAPH_ACCESS_TOKEN: ${{ secrets.TELEGRAPH_ACCESS_TOKEN }}
+        run: |
+          python -m src.main --listen-bot --max-minutes 330
+
+      - name: Save any remaining bookmark changes
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/saved_bookmarks.json
+          if ! git diff --staged --quiet; then
+            git commit -m "chore: save bookmarks [skip ci]"
+            git pull --rebase origin "${GITHUB_REF_NAME}"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi

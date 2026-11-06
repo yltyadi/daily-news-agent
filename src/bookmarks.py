@@ -4,7 +4,10 @@ import asyncio
 import html
 import json
 import logging
+import os
 import re
+import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -85,8 +88,11 @@ def load_bookmarks_store() -> BookmarksStore:
 
 def save_bookmarks_store(store: BookmarksStore) -> None:
     BOOKMARKS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    payload = store.model_dump(mode="json")
+    # Никогда не сохраняем токен Telegraph в открытый JSON в git — он читается из TELEGRAPH_ACCESS_TOKEN
+    payload["telegraph_access_token"] = ""
     BOOKMARKS_FILE.write_text(
-        json.dumps(store.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n",
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
     _save_bookmarks_markdown(store)
@@ -188,6 +194,8 @@ def _find_story_in_saved_digests(
 
     digests_dir = ROOT_DIR / config.general.daily_digests_dir
     target_file = digests_dir / f"digest_{iso_date}.json"
+    if not target_file.exists() and os.getenv("GITHUB_ACTIONS", "").lower() == "true":
+        subprocess.run(["git", "pull", "--rebase"], cwd=ROOT_DIR, check=False)
     candidate_files = [target_file] if target_file.exists() else sorted(digests_dir.glob("digest_*.json"), reverse=True)
 
     for json_path in candidate_files:
@@ -233,6 +241,8 @@ def _find_idea_in_saved_digests(
 
     digests_dir = ROOT_DIR / config.general.daily_digests_dir
     target_file = digests_dir / f"digest_{iso_date}.json"
+    if not target_file.exists() and os.getenv("GITHUB_ACTIONS", "").lower() == "true":
+        subprocess.run(["git", "pull", "--rebase"], cwd=ROOT_DIR, check=False)
     candidate_files = [target_file] if target_file.exists() else sorted(digests_dir.glob("digest_*.json"), reverse=True)
 
     for json_path in candidate_files:
@@ -873,15 +883,53 @@ async def sync_telegram_bookmarks_once(config: AppConfig) -> int:
     return processed_count
 
 
-async def listen_telegram_bookmarks_loop(config: AppConfig) -> None:
+def _git_push_bookmarks_if_in_ci() -> None:
+    """Если запущено в GitHub Actions — сразу сохраняет обновлённый data/saved_bookmarks.json в git."""
+    if os.getenv("GITHUB_ACTIONS", "").lower() != "true":
+        return
+    try:
+        subprocess.run(["git", "config", "user.name", "github-actions[bot]"], cwd=ROOT_DIR, check=False)
+        subprocess.run(
+            ["git", "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"],
+            cwd=ROOT_DIR,
+            check=False,
+        )
+        subprocess.run(["git", "add", "data/saved_bookmarks.json"], cwd=ROOT_DIR, check=False)
+        diff = subprocess.run(["git", "diff", "--staged", "--quiet"], cwd=ROOT_DIR)
+        if diff.returncode != 0:
+            subprocess.run(
+                ["git", "commit", "-m", "chore: save bookmark in real-time [skip ci]"],
+                cwd=ROOT_DIR,
+                check=False,
+            )
+            branch = os.getenv("GITHUB_REF_NAME", "main")
+            subprocess.run(["git", "pull", "--rebase", "origin", branch], cwd=ROOT_DIR, check=False)
+            subprocess.run(["git", "push", "origin", f"HEAD:{branch}"], cwd=ROOT_DIR, check=False)
+            logger.info("data/saved_bookmarks.json автоматически сохранён в GitHub репозиторий.")
+    except Exception as exc:
+        logger.warning("Не удалось отправить закладки в git: %s", exc)
+
+
+async def listen_telegram_bookmarks_loop(config: AppConfig, max_minutes: int = 0) -> None:
     """
     Фоновый режим реального времени (0 токенов LLM, $0.00):
     мгновенно обрабатывает нажатия кнопок «📌 Сохранить сюжет» и «💡 Сохранить идею» из Telegraph.
+    Если задан max_minutes > 0 (для GitHub Actions), работает указанное время и штатно завершается.
     """
-    logger.info("Запущен режим мгновенного сохранения заметок и идей (--listen-bot). Нажмите Ctrl+C для выхода.")
+    logger.info(
+        "Запущен 24/7 обработчик заметок и идей (--listen-bot, max_minutes=%d).",
+        max_minutes,
+    )
+    start_ts = time.monotonic()
     while True:
         try:
-            await sync_telegram_bookmarks_once(config)
+            count = await sync_telegram_bookmarks_once(config)
+            if count > 0:
+                _git_push_bookmarks_if_in_ci()
         except Exception as exc:
             logger.warning("Ошибка в цикле заметок: %s", exc)
+
+        if max_minutes > 0 and (time.monotonic() - start_ts) >= (max_minutes * 60):
+            logger.info("Достигнут лимит времени сессии (%d мин), штатное завершение.", max_minutes)
+            break
         await asyncio.sleep(2.0)
