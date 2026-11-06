@@ -9,6 +9,7 @@ import smtplib
 from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.utils import formatdate, make_msgid
 from pathlib import Path
 from typing import Any
 
@@ -824,11 +825,6 @@ def render_html_email(brief: DailyBrief, stats: UsageSummaryStats) -> str:
         f"<p class='meta'>Окно: последние {brief.window_hours}ч | Постов Telegram: <b>{brief.total_raw_telegram_posts}</b> | Писем Gmail: <b>{brief.total_raw_emails}</b> | Выделено сюжетов: <b>{brief.total_extracted_stories}</b></p>",
     ]
 
-    if brief.telegraph_url:
-        parts.append(
-            f"<p><a href='{html.escape(brief.telegraph_url)}' style='display:inline-block;background:#2563eb;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none;font-weight:600;'>⚡ Открыть в Telegraph (Instant View)</a></p>"
-        )
-
     if brief.cross_links and brief.cross_links.executive_summary:
         parts.append(f"<div class='overview'><b>🧭 Главная картина дня:</b><br>{html.escape(brief.cross_links.executive_summary)}</div>")
 
@@ -860,13 +856,12 @@ def render_html_email(brief: DailyBrief, stats: UsageSummaryStats) -> str:
                 parts.append(f"<p><b>Значение и последствия:</b> {html.escape(topic.implications_or_context)}</p>")
 
             if topic.sources:
-                links_html: list[str] = []
-                for src in topic.sources:
-                    if src.url and src.url.startswith("http"):
-                        links_html.append(f"<a href='{html.escape(src.url)}'>{html.escape(src.label)}</a>")
-                    else:
-                        links_html.append(html.escape(src.label))
-                parts.append(f"<div class='sources'>🔗 Источники: {' | '.join(links_html)}</div>")
+                # Важно: для новых аккаунтов Gmail ссылки на домены t.me / telegra.ph внутри писем
+                # блокируются исходящим антиспам-фильтром Google («appears suspicious»).
+                # Поэтому в Email выводим названия источников текстом (все кликабельные ссылки есть в Telegram-боте).
+                labels_html = [f"<b>{html.escape(src.label)}</b>" for src in topic.sources if src.label]
+                if labels_html:
+                    parts.append(f"<div class='sources'>📌 Источники: {' | '.join(labels_html)}</div>")
             parts.append("<hr style='border:none;border-top:1px solid #f3f4f6;margin:16px 0;'>")
 
         if sec.report.automation_ideas:
@@ -950,11 +945,19 @@ def send_email_digest(config: AppConfig, brief: DailyBrief, stats: UsageSummaryS
 
     date_str = brief.generated_at.strftime("%d.%m.%Y")
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"📰 Ежедневная сводка новостей за {date_str} ({brief.total_extracted_stories} сюжетов)"
-    msg["From"] = config.gmail_user
+    msg["Subject"] = f"Ежедневная аналитическая сводка за {date_str}"
+    msg["From"] = f"Daily News Digest <{config.gmail_user}>"
     msg["To"] = config.recipient_email
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid(domain="gmail.com")
 
     html_body = render_html_email(brief, stats)
+    plain_fallback = (
+        f"Ежедневная аналитическая сводка за {date_str}\n"
+        f"Сюжетов: {brief.total_extracted_stories}\n\n"
+        + (brief.cross_links.executive_summary if brief.cross_links else "")
+    )
+    msg.attach(MIMEText(plain_fallback, "plain", "utf-8"))
     msg.attach(MIMEText(html_body, "html", "utf-8"))
 
     if _send_smtp_message(config, msg):

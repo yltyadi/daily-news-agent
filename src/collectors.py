@@ -654,6 +654,19 @@ def collect_gmail_emails(config: AppConfig, cutoff_utc: datetime) -> list[RawIte
                     continue
 
                 sender = _decode_mime_header(msg.get("From"))
+                sender_low = sender.lower()
+                # Пропускаем системные письма Google, отчёты о доставке (mailer-daemon) и собственные отправленные дайджесты
+                if any(
+                    sys_pat in sender_low
+                    for sys_pat in (
+                        "mailer-daemon@",
+                        "postmaster@",
+                        "forwarding-noreply@google.com",
+                        "no-reply@accounts.google.com",
+                        config.gmail_user.lower(),
+                    )
+                ):
+                    continue
                 if not _matches_allowed_senders(sender, config.gmail.allowed_senders):
                     continue
 
