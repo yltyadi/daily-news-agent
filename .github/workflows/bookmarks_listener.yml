@@ -1,9 +1,14 @@
 name: 24/7 Bookmarks & Ideas Listener
 
 on:
-  # Запускается стабильно через cron-job.org (workflow_dispatch) каждые 5 часов,
-  # а также автоматически перезапускает сам себя по завершении 5.5-часовой сессии.
+  # Запускается стабильно через cron-job.org (workflow_dispatch) каждые 5 часов
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "Optional mode (accepted for cron-job.org compatibility)"
+        required: false
+        default: "bookmarks"
+        type: string
   push:
     branches:
       - main
