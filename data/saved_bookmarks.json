@@ -1,5 +1,5 @@
 {
-  "last_update_id": 52975760,
+  "last_update_id": 52975761,
   "bot_username": "dy_daily_news_digest_bot",
   "telegraph_access_token": "",
   "telegraph_url": "https://telegra.ph/Moya-baza-sohranyonnyh-novostej-i-zametok-0-10-23",
@@ -134,6 +134,36 @@
         }
       ],
       "user_note": ""
+    },
+    {
+      "bookmark_id": "20261114_avtomatizatsiya_6",
+      "saved_at": "2026-11-15 10:12 UTC",
+      "digest_date": "2026-11-14",
+      "category_slug": "avtomatizatsiya",
+      "category_title": "🤖 Автоматизация (промышленность и идеи)",
+      "topic_index": 6,
+      "headline": "Автоматизация корпоративной отчетности и интеграция данных через модульную архитектуру FineBI",
+      "summary_paragraphs": [
+        "Интегратор BI Consult представил опыт адаптации и расширения платформы self-service аналитики FanRuan FineBI шестого поколения в корпоративном секторе. Основной фокус направлен на преодоление барьеров интеграции разнородных источников производственных и управленческих данных без привлечения штатных разработчиков вендора.",
+        "Применение сертифицированных плагинов маркетплейса FanRuan позволяет подключать динамически обновляемые наборы данных из файлов CSV/TSV через модуль Enhanced CSV Dataset, автоматизировать обслуживание серверов аналитики (BI Automatic Log Cleaning), а также кастомизировать мобильные витрины для оперативных производственных диспетчерских служб."
+      ],
+      "key_figures_and_facts": [
+        "Целевая платформа: FanRuan FineBI 5 / 6",
+        "Ключевые модули: Enhanced CSV Dataset (автоматизация загрузки обновляемых плоских файлов), BI Toolkit, BI Automatic Log Cleaning",
+        "Поддерживаемые форматы развертывания: онлайн-маркетплейс и локальная установка в изолированных DMZ-контурах"
+      ],
+      "implications_or_context": "Модульная архитектура BI дает промышленным предприятиям инструмент быстрой сборки дашбордов из данных локальных АСУ ТП и ERP без нарушения изолированного сетевого периметра безопасности.",
+      "sources": [
+        {
+          "label": "@ba_sa_analytics",
+          "url": "https://t.me/ba_sa_analytics/5538"
+        },
+        {
+          "label": "Хабр",
+          "url": "https://habr.com/ru/articles/741304/"
+        }
+      ],
+      "user_note": ""
     }
   ],
   "ideas_telegraph_url": "https://telegra.ph/Moya-baza-idej-dlya-avtomatizacii-0-10-29",
@@ -238,5 +268,5 @@
       "user_note": ""
     }
   ],
-  "last_saved_type": "idea"
+  "last_saved_type": "news"
 }
