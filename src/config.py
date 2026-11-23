@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import yaml
 from dotenv import load_dotenv
@@ -16,25 +14,9 @@ load_dotenv(ROOT_DIR / ".env")
 
 class ScheduleConfig(BaseModel):
     timezone: str = "Asia/Almaty"
-    daily_time: str = "21:00"
+    daily_time: str = "19:00"
     monthly_day: int = 1
     monthly_time: str = "09:00"
-
-    def to_utc_crons(self) -> tuple[str, str]:
-        tz = ZoneInfo(self.timezone)
-        now = datetime.now(tz)
-
-        d_hour, d_min = [int(x) for x in self.daily_time.strip().split(":")]
-        daily_local = now.replace(hour=d_hour, minute=d_min, second=0, microsecond=0)
-        daily_utc = daily_local.astimezone(timezone.utc)
-        daily_cron = f"{daily_utc.minute} {daily_utc.hour} * * *"
-
-        m_hour, m_min = [int(x) for x in self.monthly_time.strip().split(":")]
-        monthly_local = now.replace(day=1, hour=m_hour, minute=m_min, second=0, microsecond=0)
-        monthly_utc = monthly_local.astimezone(timezone.utc)
-        monthly_cron = f"{monthly_utc.minute} {monthly_utc.hour} {self.monthly_day} * *"
-
-        return daily_cron, monthly_cron
 
 
 class PricingConfig(BaseModel):
@@ -61,7 +43,16 @@ class LLMConfig(BaseModel):
 class TelegramConfig(BaseModel):
     enabled: bool = True
     read_nested_articles: bool = True
+    deduplicate_before_llm: bool = True
+    priority_channels: dict[str, str] = Field(default_factory=dict)
     channels: list[str] = Field(default_factory=list)
+
+    def get_priority_default_category(self, username: str) -> str | None:
+        key = username.strip().lstrip("@").lower()
+        for ch, cat_slug in self.priority_channels.items():
+            if ch.strip().lstrip("@").lower() == key:
+                return cat_slug
+        return None
 
 
 class GmailConfig(BaseModel):
@@ -85,6 +76,8 @@ class CategoryConfig(BaseModel):
     title: str
     description: str
     skill_file: str
+    subsections: list[str] = Field(default_factory=list)
+    ideas_section_title: str = "💡 Прикладные идеи для автоматизации"
 
     def load_skill_text(self) -> str:
         path = ROOT_DIR / self.skill_file
@@ -96,6 +89,7 @@ class CategoryConfig(BaseModel):
 class GeneralConfig(BaseModel):
     lookback_hours: int = 24
     monthly_lookback_days: int = 32
+    daily_digests_retention_days: int = 45
     language: str = "ru"
     save_local_markdown: bool = True
     daily_digests_dir: str = "data/daily_digests"
@@ -147,6 +141,12 @@ class AppConfig(BaseModel):
         default_factory=lambda: _clean_env_secret("TG_CHAT_ID", ("123456789", "your_chat_id"))
     )
     telegraph_access_token: str = Field(default_factory=lambda: os.getenv("TELEGRAPH_ACCESS_TOKEN", "").strip())
+
+    def get_category(self, slug: str) -> CategoryConfig | None:
+        for cat in self.categories:
+            if cat.slug == slug:
+                return cat
+        return None
 
     def load_cross_links_skill(self) -> str:
         path = ROOT_DIR / self.cross_links_skill_file

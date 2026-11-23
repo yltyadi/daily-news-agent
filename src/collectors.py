@@ -9,13 +9,13 @@ from datetime import datetime, timedelta, timezone
 from email.header import decode_header
 from email.utils import parsedate_to_datetime
 from typing import Iterable
-from urllib.parse import parse_qs, quote, urljoin, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
 
 import httpx
 from bs4 import BeautifulSoup, Tag
 
 from src.config import AppConfig
-from src.models import RawItem
+from src.models import RawItem, SourceRef
 
 logger = logging.getLogger(__name__)
 
@@ -25,23 +25,21 @@ USER_AGENT = (
 )
 
 SKIP_EXTENSIONS = (
-    ".jpg",
-    ".jpeg",
-    ".png",
-    ".gif",
-    ".webp",
-    ".mp4",
-    ".mp3",
-    ".pdf",
-    ".zip",
-    ".rar",
-    ".svg",
-    ".ico",
+    ".jpg", ".jpeg", ".png", ".gif", ".webp",
+    ".mp4", ".mp3", ".pdf", ".zip", ".rar", ".svg", ".ico",
 )
+
+SKIP_HOSTS = (
+    "youtube.com", "youtu.be", "instagram.com", "tiktok.com",
+    "facebook.com", "vk.com", "whatsapp.com", "tgstat.ru",
+    "tgstat.com", "telega.in", "x.com", "twitter.com",
+)
+
+KAZAKH_LETTERS = set("әғқңөұүһіӘҒҚҢӨҰҮҺІ")
 
 
 # ==============================================================================
-# 1. Глубокое чтение вложенных статей (Telegraph, внешние СМИ, вложенные посты TG)
+# 1. Подгрузка статей по ссылкам (глубина 1, параллельно, с кэшем URL)
 # ==============================================================================
 
 
@@ -58,8 +56,23 @@ def _unwrap_url(raw_url: str) -> str:
     return url
 
 
+def _canonicalize_url(raw_url: str) -> str:
+    """Убирает UTM-метки и якоря для выявления одинаковых статей из разных каналов."""
+    url = _unwrap_url(raw_url)
+    if not url:
+        return ""
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query)
+    clean_qs = {
+        k: v
+        for k, v in qs.items()
+        if not k.lower().startswith(("utm_", "fbclid", "gclid", "yclid", "ref", "from"))
+    }
+    return urlunparse((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip("/"), "", urlencode(clean_qs, doseq=True), ""))
+
+
 def _is_hydratable_article_url(url: str) -> bool:
-    """Проверяет, стоит ли переходить по ссылке для чтения полной вложенной статьи."""
+    """Проверяет, ведёт ли ссылка на читаемую статью или вложенный пост."""
     if not url or not url.startswith(("http://", "https://")):
         return False
     parsed = urlparse(url)
@@ -68,78 +81,47 @@ def _is_hydratable_article_url(url: str) -> bool:
 
     if any(path.endswith(ext) for ext in SKIP_EXTENSIONS):
         return False
-
-    if any(
-        skip in host
-        for skip in (
-            "youtube.com",
-            "youtu.be",
-            "instagram.com",
-            "tiktok.com",
-            "facebook.com",
-            "vk.com",
-            "whatsapp.com",
-            "tgstat.ru",
-            "tgstat.com",
-            "telega.in",
-        )
-    ):
+    if any(skip in host for skip in SKIP_HOSTS):
         return False
 
     if host in {"t.me", "telegram.me"}:
         parts = [p for p in parsed.path.split("/") if p]
-        if len(parts) == 2 and parts[0] != "s" and parts[1].isdigit():
-            return True
-        if len(parts) == 3 and parts[0] == "s" and parts[2].isdigit():
-            return True
-        return False
+        return (len(parts) == 2 and parts[0] != "s" and parts[1].isdigit()) or (
+            len(parts) == 3 and parts[0] == "s" and parts[2].isdigit()
+        )
 
-    return True
+    return path not in {"", "/", "/ru", "/kz", "/en"}
 
 
-def _extract_article_and_nested_links_from_html(
-    html_text: str,
-    base_url: str,
-) -> tuple[str, list[str]]:
-    """
-    Извлекает полный текст статьи (с поддержкой telegra.ph, Habr, новостных порталов)
-    И возвращает список вложенных ссылок внутри этой статьи.
-    """
+def _extract_article_text_from_html(html_text: str, base_url: str) -> str:
+    """Извлекает чистый текст статьи без меню и скриптов."""
     soup = BeautifulSoup(html_text, "lxml")
-    parsed_base = urlparse(base_url)
-    host = parsed_base.netloc.lower()
-
-    nested_links: list[str] = []
+    host = urlparse(base_url).netloc.lower()
 
     # 1. Вложенный пост Telegram (t.me/channel/12345?embed=1)
     if host in {"t.me", "telegram.me"}:
         msg_text_el = soup.select_one(".tgme_widget_message_text")
         if msg_text_el:
-            text, links = _extract_message_text_and_links(msg_text_el)
-            return text[:4000], links
-        return "", []
+            text, _ = _extract_message_text_and_links(msg_text_el)
+            return text[:3000]
+        return ""
 
     # 2. Статья в Telegraph (telegra.ph)
     if "telegra.ph" in host:
         article_node = soup.select_one("article.tl_article_content") or soup.find("article") or soup.body
         if not article_node:
-            return "", []
+            return ""
         title_el = soup.find("h1")
         title_str = title_el.get_text(" ", strip=True) if title_el else ""
-        for a_tag in article_node.find_all("a", href=True):
-            full_href = _unwrap_url(urljoin(base_url, str(a_tag["href"]).strip()))
-            if _is_hydratable_article_url(full_href) and full_href != base_url and full_href not in nested_links:
-                nested_links.append(full_href)
         blocks = [
             el.get_text(" ", strip=True)
             for el in article_node.find_all(["h3", "h4", "p", "li", "blockquote"])
             if el.get_text(" ", strip=True)
         ]
         body = "\n".join(blocks)
-        full_text = f"{title_str}\n{body}".strip() if title_str else body.strip()
-        return full_text[:5000], nested_links
+        return (f"{title_str}\n{body}".strip() if title_str else body.strip())[:4500]
 
-    # 3. Обычный новостной сайт / статья
+    # 3. Обычная веб-страница / статья
     for tag in soup(["script", "style", "nav", "footer", "header", "aside", "noscript", "form", "svg", "iframe"]):
         tag.decompose()
 
@@ -149,21 +131,11 @@ def _extract_article_and_nested_links_from_html(
     main_container = (
         soup.find("article")
         or soup.find("main")
-        or soup.select_one(".tm-article-body, .article-body, .post-content, .entry-content, .article__text")
+        or soup.select_one(".tm-article-body, .article-body, .post-content, .entry-content, .article__text, .news-text")
         or soup.body
     )
     if not main_container:
-        return "", []
-
-    for a_tag in main_container.find_all("a", href=True):
-        full_href = _unwrap_url(urljoin(base_url, str(a_tag["href"]).strip()))
-        if (
-            _is_hydratable_article_url(full_href)
-            and full_href != base_url
-            and urlparse(full_href).netloc.lower() != host
-            and full_href not in nested_links
-        ):
-            nested_links.append(full_href)
+        return ""
 
     paragraphs: list[str] = []
     seen_p: set[str] = set()
@@ -174,93 +146,224 @@ def _extract_article_and_nested_links_from_html(
             paragraphs.append(txt)
 
     if not paragraphs:
-        return "", []
+        return ""
 
-    body = "\n".join(paragraphs)[:4500].strip()
-    full_text = f"Заголовок статьи: {title_str}\n{body}" if title_str else body
-    return full_text, nested_links
+    body = "\n".join(paragraphs)[:3200].strip()
+    return f"Заголовок статьи: {title_str}\n{body}" if title_str else body
 
 
-async def _hydrate_url_recursive(
+async def _fetch_article_cached(
     client: httpx.AsyncClient,
     sem: asyncio.Semaphore,
-    url_cache: dict[str, str],
+    inflight_cache: dict[str, asyncio.Task[str]],
     url: str,
-    depth: int,
-    visited: set[str],
-) -> list[tuple[str, str]]:
-    """
-    Рекурсивно скачивает текст вложенной статьи и вложенных в неё материалов.
-    """
+) -> tuple[str, str]:
+    """Загружает URL максимум один раз за весь запуск."""
     clean_url = _unwrap_url(url)
-    if not clean_url or clean_url in visited or not _is_hydratable_article_url(clean_url):
-        return []
-    visited.add(clean_url)
+    canon = _canonicalize_url(clean_url)
+    if not clean_url or not canon or not _is_hydratable_article_url(clean_url):
+        return clean_url, ""
 
-    fetch_url = clean_url
-    parsed = urlparse(clean_url)
-    if parsed.netloc.lower() in {"t.me", "telegram.me"} and "embed=1" not in parsed.query:
-        fetch_url = f"{clean_url}?embed=1"
-
-    nested_urls: list[str] = []
-    if clean_url in url_cache:
-        extracted_text = url_cache[clean_url]
-    else:
-        extracted_text = ""
+    async def _do_fetch() -> str:
+        fetch_url = clean_url
+        parsed = urlparse(clean_url)
+        if parsed.netloc.lower() in {"t.me", "telegram.me"} and "embed=1" not in parsed.query:
+            fetch_url = f"{clean_url}?embed=1"
         async with sem:
             try:
-                resp = await client.get(fetch_url, follow_redirects=True, timeout=12.0)
+                resp = await client.get(fetch_url, follow_redirects=True, timeout=8.0)
                 ctype = resp.headers.get("content-type", "").lower()
                 if resp.status_code == 200 and ("text/html" in ctype or "application/xhtml" in ctype):
-                    extracted_text, nested_urls = _extract_article_and_nested_links_from_html(
-                        resp.text, str(resp.url)
-                    )
+                    return _extract_article_text_from_html(resp.text, str(resp.url))
             except Exception:
-                extracted_text = ""
-        url_cache[clean_url] = extracted_text
+                return ""
+        return ""
 
-    results: list[tuple[str, str]] = []
-    if extracted_text:
-        results.append((clean_url, extracted_text))
+    task = inflight_cache.get(canon)
+    if task is None:
+        task = asyncio.create_task(_do_fetch())
+        inflight_cache[canon] = task
 
-    # Читаем также вложенные статьи внутри прочитанной статьи/поста
-    if depth < 2 and nested_urls:
-        for child_url in nested_urls[:3]:
-            child_res = await _hydrate_url_recursive(
-                client=client,
-                sem=sem,
-                url_cache=url_cache,
-                url=child_url,
-                depth=depth + 1,
-                visited=visited,
-            )
-            results.extend(child_res)
-
-    return results
+    try:
+        return clean_url, await task
+    except Exception:
+        return clean_url, ""
 
 
 # ==============================================================================
-# 2. Сбор ВСЕХ постов за последние 24 часа из публичных Telegram-каналов
+# 2. Простая дедупликация до LLM (без словарей стоп-слов)
 # ==============================================================================
 
 
-async def _resolve_channel_username(client: httpx.AsyncClient, raw: str) -> str:
-    """
-    Превращает 'https://t.me/finmentorkz' или '@finmentorkz' в 'finmentorkz'.
-    Пропускает закрытые invite-ссылки вида 'https://t.me/+...' или 't.me/joinchat/...'.
-    """
+def _is_kazakh_text(text: str) -> bool:
+    """Определяет казахский текст по доле специфических казахских букв (әғқңөұүһі) без хардкода слов."""
+    sample = text.split("[Полный текст вложенной статьи", 1)[0][:1000]
+    letters = [ch for ch in sample if ch.isalpha()]
+    if len(letters) < 30:
+        return False
+    kz_count = sum(1 for ch in letters if ch in KAZAKH_LETTERS)
+    return kz_count >= 6 and (kz_count / len(letters)) >= 0.035
+
+
+def _extract_token_set(text: str) -> set[str]:
+    body = text.split("[Полный текст вложенной статьи", 1)[0]
+    body = re.sub(r"https?://\S+", " ", body.lower())
+    return {w for w in re.findall(r"[a-zа-яёәғқңөұүһі0-9]{4,}", body) if not w.isdigit()}
+
+
+def _jaccard_similarity(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    inter = len(a & b)
+    return inter / len(a | b) if inter else 0.0
+
+
+def _overlap_coefficient(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / min(len(a), len(b))
+
+
+def _normalized_prefix(text: str, length: int = 90) -> str:
+    body = text.split("[Полный текст вложенной статьи", 1)[0]
+    body = re.sub(r"https?://\S+", " ", body.lower())
+    return re.sub(r"[^a-zа-яёәғқңөұүһі0-9]+", " ", body).strip()[:length]
+
+
+def _merge_source_into(keeper: RawItem, dup: RawItem) -> None:
+    """Сохраняет ссылку дубля в keeper.extra_sources без потери первоисточников."""
+    existing_urls = {keeper.source_url} | {s.url for s in keeper.extra_sources}
+    if dup.source_url not in existing_urls:
+        keeper.extra_sources.append(
+            SourceRef(label=f"{dup.source_name} ({dup.source_title})", url=dup.source_url)
+        )
+        existing_urls.add(dup.source_url)
+    for src in dup.extra_sources:
+        if src.url not in existing_urls:
+            keeper.extra_sources.append(src)
+            existing_urls.add(src.url)
+    if dup.is_priority and not keeper.is_priority:
+        keeper.is_priority = True
+        keeper.priority_default_category = dup.priority_default_category
+
+
+def _deduplicate_same_channel(items: list[RawItem]) -> list[RawItem]:
+    """Убирает двойные посты и KZ/RU пары-близнецы внутри одного канала (сохраняя KZ-only посты!)."""
+    if len(items) <= 1:
+        return items
+
+    sorted_items = sorted(items, key=lambda x: x.published_at)
+    kept: list[RawItem] = []
+
+    for item in sorted_items:
+        item_tokens = _extract_token_set(item.text)
+        item_is_kz = _is_kazakh_text(item.text)
+        item_body_len = len(item.text.split("[Полный текст вложенной статьи", 1)[0])
+        item_prefix = _normalized_prefix(item.text)
+        merged = False
+
+        for idx in range(len(kept) - 1, max(-1, len(kept) - 6), -1):
+            prev = kept[idx]
+            dt_sec = abs((item.published_at - prev.published_at).total_seconds())
+            if dt_sec > 900:
+                continue
+
+            prev_tokens = _extract_token_set(prev.text)
+            same_headline = len(item_prefix) >= 45 and item_prefix == _normalized_prefix(prev.text)
+
+            if (
+                _jaccard_similarity(item_tokens, prev_tokens) >= 0.60
+                or _overlap_coefficient(item_tokens, prev_tokens) >= 0.80
+                or same_headline
+            ):
+                if len(item.text) > len(prev.text):
+                    _merge_source_into(item, prev)
+                    kept[idx] = item
+                else:
+                    _merge_source_into(prev, item)
+                merged = True
+                break
+
+            # Двуязычная пара KZ + RU в пределах 3 минут сопоставимой длины -> оставляем русскую версию
+            prev_is_kz = _is_kazakh_text(prev.text)
+            if dt_sec <= 180 and (item_is_kz != prev_is_kz):
+                prev_body_len = len(prev.text.split("[Полный текст вложенной статьи", 1)[0])
+                if min(item_body_len, prev_body_len) / max(item_body_len, prev_body_len, 1) >= 0.55:
+                    if prev_is_kz and not item_is_kz:
+                        _merge_source_into(item, prev)
+                        kept[idx] = item
+                    else:
+                        _merge_source_into(prev, item)
+                    merged = True
+                    break
+
+        if not merged:
+            kept.append(item)
+
+    return kept
+
+
+def deduplicate_raw_items(items: list[RawItem]) -> list[RawItem]:
+    """Объединяет репосты одной статьи/пресс-релиза между каналами ДО отправки в LLM."""
+    if len(items) <= 1:
+        return items
+
+    kept: list[RawItem] = []
+    kept_tokens: list[set[str]] = []
+    url_to_idx: dict[str, int] = {}
+
+    ordered = sorted(
+        items,
+        key=lambda x: (not x.is_priority, _is_kazakh_text(x.text), -len(x.text)),
+    )
+
+    for item in ordered:
+        matched_idx: int | None = None
+        canon_urls = [_canonicalize_url(u) for u in item.external_links if _is_hydratable_article_url(u)]
+        for cu in canon_urls:
+            if cu and cu in url_to_idx:
+                matched_idx = url_to_idx[cu]
+                break
+
+        item_tokens = _extract_token_set(item.text)
+        if matched_idx is None and len(item_tokens) >= 18:
+            for idx, prev_tokens in enumerate(kept_tokens):
+                if len(prev_tokens) >= 18 and _jaccard_similarity(item_tokens, prev_tokens) >= 0.68:
+                    matched_idx = idx
+                    break
+
+        if matched_idx is not None:
+            _merge_source_into(kept[matched_idx], item)
+            for cu in canon_urls:
+                if cu:
+                    url_to_idx.setdefault(cu, matched_idx)
+        else:
+            new_idx = len(kept)
+            kept.append(item)
+            kept_tokens.append(item_tokens)
+            for cu in canon_urls:
+                if cu:
+                    url_to_idx.setdefault(cu, new_idx)
+
+    kept.sort(key=lambda x: x.published_at)
+    return kept
+
+
+# ==============================================================================
+# 3. Сбор постов за последние 24 часа из публичных Telegram-каналов
+# ==============================================================================
+
+
+async def _resolve_channel_username(raw: str) -> str:
     cleaned = raw.strip().rstrip("/")
     if re.search(r"t\.me/\+|t\.me/joinchat/", cleaned, flags=re.IGNORECASE):
         logger.info("Пропускаем закрытый invite-канал: %s", raw)
         return ""
-
     cleaned = re.sub(r"^https?://(www\.)?(t\.me|telegram\.me)/(s/)?", "", cleaned, flags=re.IGNORECASE)
-    cleaned = cleaned.lstrip("@").split("?")[0].split("/")[0]
-    return cleaned.strip()
+    return cleaned.lstrip("@").split("?")[0].split("/")[0].strip()
 
 
 def _extract_message_text_and_links(text_div: Tag) -> tuple[str, list[str]]:
-    """Извлекает чистый текст поста, сохраняя встроенные ссылки, и список внешних/вложенных URL."""
     extracted_links: list[str] = []
     soup_copy = BeautifulSoup(str(text_div), "lxml")
 
@@ -280,14 +383,11 @@ def _extract_message_text_and_links(text_div: Tag) -> tuple[str, list[str]]:
         else:
             a_tag.replace_with(href)
 
-    raw_text = soup_copy.get_text()
-    lines = [line.strip() for line in raw_text.splitlines()]
-    cleaned_text = "\n".join(line for line in lines if line)
-    return cleaned_text.strip(), extracted_links
+    lines = [line.strip() for line in soup_copy.get_text().splitlines()]
+    return "\n".join(line for line in lines if line).strip(), extracted_links
 
 
 def _extract_preview_and_reply_context(msg_node: Tag) -> tuple[str, list[str]]:
-    """Извлекает контекст из превью статьи и цитируемого сообщения, если они есть в посте."""
     extra_parts: list[str] = []
     extra_links: list[str] = []
 
@@ -296,23 +396,24 @@ def _extract_preview_and_reply_context(msg_node: Tag) -> tuple[str, list[str]]:
         reply_txt = reply_el.get_text(" ", strip=True)
         reply_href = _unwrap_url(str(reply_el.get("href") or "").strip())
         if reply_txt:
-            extra_parts.append(f"[В ответ на / Цитата ({reply_href})]: {reply_txt}")
+            extra_parts.append(f"[Цитата ({reply_href})]: {reply_txt}")
         if reply_href and _is_hydratable_article_url(reply_href):
             extra_links.append(reply_href)
 
     preview_el = msg_node.select_one(".tgme_widget_message_link_preview")
     if preview_el:
         preview_href = _unwrap_url(str(preview_el.get("href") or "").strip())
-        site_el = preview_el.select_one(".link_preview_site_name")
-        title_el = preview_el.select_one(".link_preview_title")
-        desc_el = preview_el.select_one(".link_preview_description")
         preview_bits = [
             el.get_text(" ", strip=True)
-            for el in (site_el, title_el, desc_el)
+            for el in (
+                preview_el.select_one(".link_preview_site_name"),
+                preview_el.select_one(".link_preview_title"),
+                preview_el.select_one(".link_preview_description"),
+            )
             if el and el.get_text(" ", strip=True)
         ]
         if preview_bits:
-            extra_parts.append(f"[Превью вложенного материала ({preview_href})]: " + " — ".join(preview_bits))
+            extra_parts.append(f"[Превью ({preview_href})]: " + " — ".join(preview_bits))
         if preview_href and _is_hydratable_article_url(preview_href) and preview_href not in extra_links:
             extra_links.append(preview_href)
 
@@ -323,32 +424,30 @@ async def _fetch_single_channel(
     client: httpx.AsyncClient,
     channel_sem: asyncio.Semaphore,
     article_sem: asyncio.Semaphore,
-    url_cache: dict[str, str],
+    inflight_cache: dict[str, asyncio.Task[str]],
     channel_raw: str,
     cutoff_utc: datetime,
-    read_nested_articles: bool = True,
+    config: AppConfig,
 ) -> list[RawItem]:
-    """
-    Листает историю канала назад до тех пор, пока не дойдёт до постов старше cutoff_utc (24 часа),
-    и загружает все посты + все вложенные в них статьи.
-    """
     async with channel_sem:
-        username = await _resolve_channel_username(client, channel_raw)
+        username = await _resolve_channel_username(channel_raw)
         if not username:
             return []
 
-        collected: list[RawItem] = []
+        priority_default = config.telegram.get_priority_default_category(username)
+        is_priority = priority_default is not None
+
+        raw_posts: list[RawItem] = []
         seen_post_ids: set[str] = set()
         before_id: int | None = None
 
-        # Листаем назад до тех пор, пока не упрёмся в cutoff_utc (24 часа назад)
         while True:
             url = f"https://t.me/s/{username}"
             if before_id is not None:
                 url = f"{url}?before={before_id}"
 
             try:
-                resp = await client.get(url, follow_redirects=True, timeout=20.0)
+                resp = await client.get(url, follow_redirects=True, timeout=15.0)
                 if resp.status_code != 200:
                     logger.warning("Не удалось загрузить канал @%s (HTTP %s)", username, resp.status_code)
                     break
@@ -369,9 +468,7 @@ async def _fetch_single_channel(
 
             for msg in message_nodes:
                 data_post = str(msg.get("data-post") or "").strip()
-                if not data_post or "/" not in data_post:
-                    continue
-                if data_post in seen_post_ids:
+                if not data_post or "/" not in data_post or data_post in seen_post_ids:
                     continue
                 seen_post_ids.add(data_post)
 
@@ -392,7 +489,6 @@ async def _fetch_single_channel(
 
                 if oldest_on_page is None or dt < oldest_on_page:
                     oldest_on_page = dt
-
                 if dt < cutoff_utc:
                     continue
 
@@ -405,60 +501,65 @@ async def _fetch_single_channel(
                         external_links.append(pl)
 
                 full_post_text = "\n\n".join(part for part in (text, preview_text) if part).strip()
-                if not full_post_text:
+                if not full_post_text or (len(full_post_text) < 55 and not external_links):
                     continue
 
-                post_url = f"https://t.me/{data_post}"
-
-                # Читаем все вложенные статьи и вложенные ссылки внутри этого поста
-                if read_nested_articles and external_links:
-                    visited_for_post: set[str] = {post_url}
-                    hydrated_blocks: list[str] = []
-                    for link_url in external_links:
-                        nested_articles = await _hydrate_url_recursive(
-                            client=client,
-                            sem=article_sem,
-                            url_cache=url_cache,
-                            url=link_url,
-                            depth=1,
-                            visited=visited_for_post,
-                        )
-                        for art_url, art_text in nested_articles:
-                            hydrated_blocks.append(f"[Полный текст вложенной статьи ({art_url})]:\n{art_text}")
-
-                    if hydrated_blocks:
-                        full_post_text = full_post_text + "\n\n" + "\n\n".join(hydrated_blocks)
-
-                collected.append(
+                raw_posts.append(
                     RawItem(
                         item_id=f"tg_{data_post.replace('/', '_')}",
                         source_type="telegram",
                         source_name=f"@{username} ({channel_title})",
                         source_title=f"Пост #{post_num_str} в @{username}",
-                        source_url=post_url,
+                        source_url=f"https://t.me/{data_post}",
                         published_at=dt,
-                        text=full_post_text[:15000],
+                        text=full_post_text,
                         external_links=external_links,
+                        is_priority=is_priority,
+                        priority_default_category=priority_default or "",
                     )
                 )
 
-            if not page_post_nums:
-                break
-            # Останавливаем пагинацию только тогда, когда дошли до постов старше 24 часов!
-            if oldest_on_page and oldest_on_page < cutoff_utc:
+            if not page_post_nums or (oldest_on_page and oldest_on_page < cutoff_utc):
                 break
             new_before_id = min(page_post_nums)
             if before_id is not None and new_before_id >= before_id:
                 break
             before_id = new_before_id
 
-        collected.sort(key=lambda x: x.published_at)
-        logger.info("Канал @%s: собрано %d постов за последние 24ч", username, len(collected))
-        return collected
+        if config.telegram.deduplicate_before_llm and len(raw_posts) > 1:
+            raw_posts = _deduplicate_same_channel(raw_posts)
+
+        if config.telegram.read_nested_articles:
+            for item in raw_posts:
+                if not item.external_links:
+                    continue
+                # Подгружаем статьи для приоритетных каналов, коротких постов (<1600 символов) и ссылок telegra.ph
+                if item.is_priority or len(item.text) < 1600:
+                    links_to_fetch = item.external_links[:2]
+                else:
+                    links_to_fetch = [u for u in item.external_links if "telegra.ph" in urlparse(u).netloc.lower()][:2]
+
+                if not links_to_fetch:
+                    continue
+
+                fetched = await asyncio.gather(
+                    *(_fetch_article_cached(client, article_sem, inflight_cache, u) for u in links_to_fetch)
+                )
+                hydrated_blocks = [
+                    f"[Полный текст вложенной статьи ({art_url})]:\n{art_text}"
+                    for art_url, art_text in fetched
+                    if art_text
+                ]
+                if hydrated_blocks:
+                    item.text = (item.text + "\n\n" + "\n\n".join(hydrated_blocks))[:9000]
+
+        raw_posts.sort(key=lambda x: x.published_at)
+        logger.info("Канал @%s: собрано %d уникальных постов за последние 24ч", username, len(raw_posts))
+        return raw_posts
 
 
 async def collect_telegram_posts(config: AppConfig, cutoff_utc: datetime) -> list[RawItem]:
-    """Собирает ВСЕ посты за последние 24 часа из всех каналов в config.yaml."""
+    """Собирает все посты за последние 24 часа из каналов config.yaml с дедупликацией."""
     if not config.telegram.enabled or not config.telegram.channels:
         return []
 
@@ -474,9 +575,9 @@ async def collect_telegram_posts(config: AppConfig, cutoff_utc: datetime) -> lis
         "User-Agent": USER_AGENT,
         "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
     }
-    channel_sem = asyncio.Semaphore(10)
-    article_sem = asyncio.Semaphore(12)
-    url_cache: dict[str, str] = {}
+    channel_sem = asyncio.Semaphore(12)
+    article_sem = asyncio.Semaphore(16)
+    inflight_cache: dict[str, asyncio.Task[str]] = {}
 
     async with httpx.AsyncClient(headers=headers) as client:
         tasks = [
@@ -484,10 +585,10 @@ async def collect_telegram_posts(config: AppConfig, cutoff_utc: datetime) -> lis
                 client=client,
                 channel_sem=channel_sem,
                 article_sem=article_sem,
-                url_cache=url_cache,
+                inflight_cache=inflight_cache,
                 channel_raw=ch,
                 cutoff_utc=cutoff_utc,
-                read_nested_articles=config.telegram.read_nested_articles,
+                config=config,
             )
             for ch in unique_channels
         ]
@@ -500,20 +601,29 @@ async def collect_telegram_posts(config: AppConfig, cutoff_utc: datetime) -> lis
         elif isinstance(res, Exception):
             logger.warning("Ошибка при сборе канала: %s", res)
 
+    if config.telegram.deduplicate_before_llm and len(all_items) > 1:
+        before_cross = len(all_items)
+        all_items = deduplicate_raw_items(all_items)
+        logger.info(
+            "Кросс-канальная дедупликация до LLM: %d -> %d уникальных материалов (экономия %.0f%%)",
+            before_cross,
+            len(all_items),
+            (1 - len(all_items) / max(1, before_cross)) * 100,
+        )
+
     return all_items
 
 
 # ==============================================================================
-# 3. Сбор ВСЕХ писем из Gmail через стандартный IMAP за последние 24 часа
+# 4. Сбор писем из Gmail через стандартный IMAP за последние 24 часа
 # ==============================================================================
 
 
 def _decode_mime_header(raw_header: str | None) -> str:
     if not raw_header:
         return ""
-    parts = decode_header(raw_header)
     decoded_chunks: list[str] = []
-    for content, charset in parts:
+    for content, charset in decode_header(raw_header):
         if isinstance(content, bytes):
             enc = charset or "utf-8"
             try:
@@ -540,47 +650,32 @@ def _html_to_clean_text(html_content: str) -> tuple[str, list[str]]:
             if label and label != href:
                 a_tag.replace_with(f"{label} ({href})")
 
-    text = soup.get_text("\n")
-    lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
-    cleaned = "\n".join(line for line in lines if line)
-    return cleaned[:12000], links[:20]
+    lines = [re.sub(r"\s+", " ", line).strip() for line in soup.get_text("\n").splitlines()]
+    return "\n".join(line for line in lines if line)[:10000], links[:20]
 
 
 def _extract_email_body(msg: email.message.Message) -> tuple[str, list[str]]:
     plain_parts: list[str] = []
     html_parts: list[str] = []
 
-    if msg.is_multipart():
-        for part in msg.walk():
-            content_type = part.get_content_type()
-            disp = str(part.get("Content-Disposition") or "")
-            if "attachment" in disp.lower():
-                continue
-            payload = part.get_payload(decode=True)
-            if not payload:
-                continue
-            charset = part.get_content_charset() or "utf-8"
-            try:
-                decoded = payload.decode(charset, errors="replace")
-            except LookupError:
-                decoded = payload.decode("utf-8", errors="replace")
+    parts = msg.walk() if msg.is_multipart() else [msg]
+    for part in parts:
+        if msg.is_multipart() and "attachment" in str(part.get("Content-Disposition") or "").lower():
+            continue
+        payload = part.get_payload(decode=True)
+        if not payload:
+            continue
+        charset = part.get_content_charset() or "utf-8"
+        try:
+            decoded = payload.decode(charset, errors="replace")
+        except LookupError:
+            decoded = payload.decode("utf-8", errors="replace")
 
-            if content_type == "text/plain":
-                plain_parts.append(decoded)
-            elif content_type == "text/html":
-                html_parts.append(decoded)
-    else:
-        payload = msg.get_payload(decode=True)
-        if payload:
-            charset = msg.get_content_charset() or "utf-8"
-            try:
-                decoded = payload.decode(charset, errors="replace")
-            except LookupError:
-                decoded = payload.decode("utf-8", errors="replace")
-            if msg.get_content_type() == "text/html":
-                html_parts.append(decoded)
-            else:
-                plain_parts.append(decoded)
+        ctype = part.get_content_type()
+        if ctype == "text/html":
+            html_parts.append(decoded)
+        elif ctype == "text/plain":
+            plain_parts.append(decoded)
 
     if html_parts:
         text, links = _html_to_clean_text("\n".join(html_parts))
@@ -588,24 +683,17 @@ def _extract_email_body(msg: email.message.Message) -> tuple[str, list[str]]:
             return text, links
 
     plain_text = "\n".join(plain_parts).strip()
-    urls = re.findall(r"https?://[^\s<>()\"']+", plain_text)
-    return plain_text[:12000], urls[:20]
+    return plain_text[:10000], re.findall(r"https?://[^\s<>()\"']+", plain_text)[:20]
 
 
 def _matches_allowed_senders(sender: str, allowed_senders: Iterable[str]) -> bool:
     allowed = [s.strip().lower() for s in allowed_senders if s.strip()]
-    if not allowed:
-        return True
-    sender_lower = sender.lower()
-    return any(pattern in sender_lower for pattern in allowed)
+    return True if not allowed else any(pattern in sender.lower() for pattern in allowed)
 
 
 def collect_gmail_emails(config: AppConfig, cutoff_utc: datetime) -> list[RawItem]:
-    """Подключается к Gmail по IMAP и забирает ВСЕ письма за последние 24 часа."""
-    if not config.gmail.enabled:
-        return []
-    if not config.gmail_user or not config.gmail_app_password:
-        logger.info("GMAIL_USER / GMAIL_APP_PASSWORD не заданы — пропускаем сбор почты.")
+    """Подключается к Gmail по IMAP и забирает все письма за последние 24 часа."""
+    if not config.gmail.enabled or not config.gmail_user or not config.gmail_app_password:
         return []
 
     collected: list[RawItem] = []
@@ -622,18 +710,12 @@ def collect_gmail_emails(config: AppConfig, cutoff_utc: datetime) -> list[RawIte
             if status != "OK" or not data or not data[0]:
                 return []
 
-            msg_nums = data[0].split()
-
-            for num in reversed(msg_nums):
+            for num in reversed(data[0].split()):
                 status, msg_data = mail.fetch(num, "(RFC822)")
                 if status != "OK" or not msg_data:
                     continue
 
-                raw_bytes = b""
-                for part in msg_data:
-                    if isinstance(part, tuple) and len(part) >= 2:
-                        raw_bytes = part[1]
-                        break
+                raw_bytes = next((part[1] for part in msg_data if isinstance(part, tuple) and len(part) >= 2), b"")
                 if not raw_bytes:
                     continue
 
@@ -643,10 +725,7 @@ def collect_gmail_emails(config: AppConfig, cutoff_utc: datetime) -> list[RawIte
                     continue
                 try:
                     dt = parsedate_to_datetime(date_str)
-                    if dt.tzinfo is None:
-                        dt = dt.replace(tzinfo=timezone.utc)
-                    else:
-                        dt = dt.astimezone(timezone.utc)
+                    dt = dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
                 except Exception:
                     continue
 
@@ -655,7 +734,6 @@ def collect_gmail_emails(config: AppConfig, cutoff_utc: datetime) -> list[RawIte
 
                 sender = _decode_mime_header(msg.get("From"))
                 sender_low = sender.lower()
-                # Пропускаем системные письма Google, отчёты о доставке (mailer-daemon) и собственные отправленные дайджесты
                 if any(
                     sys_pat in sender_low
                     for sys_pat in (
@@ -676,11 +754,11 @@ def collect_gmail_emails(config: AppConfig, cutoff_utc: datetime) -> list[RawIte
                 if not body_text or len(body_text.strip()) < 30:
                     continue
 
-                if message_id_hdr:
-                    gmail_url = f"https://mail.google.com/mail/u/0/#search/rfc822msgid%3A{quote(message_id_hdr)}"
-                else:
-                    gmail_url = f"https://mail.google.com/mail/u/0/#search/{quote(subject[:50])}"
-
+                gmail_url = (
+                    f"https://mail.google.com/mail/u/0/#search/rfc822msgid%3A{quote(message_id_hdr)}"
+                    if message_id_hdr
+                    else f"https://mail.google.com/mail/u/0/#search/{quote(subject[:50])}"
+                )
                 uid_str = num.decode("utf-8", errors="ignore")
                 collected.append(
                     RawItem(

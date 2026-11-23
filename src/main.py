@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import re
 import sys
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -11,7 +10,7 @@ from zoneinfo import ZoneInfo
 from src.agents import NewsAgentPipeline
 from src.bookmarks import listen_telegram_bookmarks_loop, sync_telegram_bookmarks_once
 from src.collectors import collect_gmail_emails, collect_telegram_posts
-from src.config import ROOT_DIR, load_config
+from src.config import load_config
 from src.cost_tracker import CostTracker, format_usage_text_ru
 from src.models import DailyBrief, MonthlyBrief
 from src.publisher import (
@@ -35,57 +34,9 @@ logging.basicConfig(
 logger = logging.getLogger("daily-news-agent")
 
 
-def sync_github_workflow_schedule() -> None:
-    """
-    Читает расписание (daily_time, monthly_day, monthly_time и timezone) из config.yaml
-    и автоматически обновляет cron-выражения в .github/workflows/daily_brief.yml.
-    """
-    config = load_config()
-    daily_cron, monthly_cron = config.schedule.to_utc_crons()
-    workflow_path = ROOT_DIR / ".github" / "workflows" / "daily_brief.yml"
-    if not workflow_path.exists():
-        logger.error("Файл %s не найден!", workflow_path)
-        return
-
-    text = workflow_path.read_text(encoding="utf-8")
-
-    # Обновляем блок schedule и условие определения monthly
-    new_schedule_block = (
-        "  schedule:\n"
-        f"    # 1. Ежедневный запуск: каждый день в {config.schedule.daily_time} ({config.schedule.timezone})\n"
-        f'    - cron: "{daily_cron}"\n'
-        f"    # 2. Ежемесячный запуск: {config.schedule.monthly_day}-го числа каждого месяца в {config.schedule.monthly_time} ({config.schedule.timezone})\n"
-        f'    - cron: "{monthly_cron}"'
-    )
-    text = re.sub(
-        r"  schedule:\n(?:    #.*\n|    - cron:.*\n)+",
-        new_schedule_block + "\n",
-        text,
-    )
-    text = re.sub(
-        r'elif \[ "\$\{\{ github\.event\.schedule \}\}" = "[^"]+" \]; then',
-        f'elif [ "${{{{ github.event.schedule }}}}" = "{monthly_cron}" ]; then',
-        text,
-    )
-
-    workflow_path.write_text(text, encoding="utf-8")
-    logger.info(
-        "Расписание в .github/workflows/daily_brief.yml успешно синхронизировано с config.yaml!\n"
-        "  • Ежедневный запуск: %s (%s) -> UTC cron: '%s'\n"
-        "  • Ежемесячный запуск: %d-го числа в %s (%s) -> UTC cron: '%s'",
-        config.schedule.daily_time,
-        config.schedule.timezone,
-        daily_cron,
-        config.schedule.monthly_day,
-        config.schedule.monthly_time,
-        config.schedule.timezone,
-        monthly_cron,
-    )
-
-
 async def run_daily_pipeline(hours_override: int | None = None, dry_run: bool = False) -> int:
     config = load_config()
-    # Сначала синхронизируем любые нажатия «📌 Сохранить в Базу Заметок» из очереди бота
+    # Сначала синхронизируем любые нажатия «📌 Сохранить» / «💡 Сохранить идею» из очереди бота
     await sync_telegram_bookmarks_once(config)
 
     if not config.gemini_api_key:
@@ -102,19 +53,22 @@ async def run_daily_pipeline(hours_override: int | None = None, dry_run: bool = 
     except Exception:
         now_local = now_utc
 
+    num_cats = len(config.categories)
     logger.info(
-        "Запуск ЕЖЕДНЕВНОГО сбора новостей за последние %d ч (с %s UTC)",
+        "Запуск ЕЖЕДНЕВНОГО сбора новостей за последние %d ч (с %s UTC, каналов: %d, категорий: %d)",
         lookback_hours,
         cutoff_utc.strftime("%Y-%m-%d %H:%M"),
+        len(config.telegram.channels),
+        num_cats,
     )
 
-    # 1. Сбор ВСЕХ сообщений из 60 Telegram-каналов (включая вложенные статьи!) и писем из Gmail за 24 часа
+    # 1. Сбор сообщений из Telegram (с умной гидрацией и дедупликацией) и писем из Gmail за 24 часа
     tg_items = await collect_telegram_posts(config, cutoff_utc=cutoff_utc)
     email_items = collect_gmail_emails(config, cutoff_utc=cutoff_utc)
     all_raw_items = tg_items + email_items
 
     logger.info(
-        "Итого собрано сырых материалов: %d (Telegram: %d, Gmail: %d)",
+        "Итого уникальных материалов после дедупликации: %d (Telegram: %d, Gmail: %d)",
         len(all_raw_items),
         len(tg_items),
         len(email_items),
@@ -127,15 +81,24 @@ async def run_daily_pipeline(hours_override: int | None = None, dry_run: bool = 
     )
     pipeline = NewsAgentPipeline(config=config, cost_tracker=cost_tracker)
 
-    # 2. Этап 1: Агент-маршрутизатор
-    logger.info("Этап 1/3: Извлечение новостей и маршрутизация по 8 категориям (%s)...", config.llm.model)
-    routed_stories = await pipeline.extract_and_route(all_raw_items)
-    total_stories = sum(len(v) for v in routed_stories.values())
-    logger.info("Извлечено релевантных сюжетных назначений по категориям: %d", total_stories)
+    # 2. Этап 1: Быстрый агент-маршрутизатор (RU + KZ + защита приоритетных источников)
+    logger.info(
+        "Этап 1/3: Классификация и маршрутизация по %d категориям (%s)...",
+        num_cats,
+        config.llm.router_model,
+    )
+    routed_items = await pipeline.extract_and_route(all_raw_items)
+    total_routed = sum(len(v) for v in routed_items.values())
+    logger.info("Распределено назначений по категориям: %d", total_routed)
 
-    # 3. Этап 2: 8 независимых агентов по каждой категории (параллельно, каждый со своим skill-файлом)
-    logger.info("Этап 2/3: Запуск 8 независимых отраслевых агентов со своими skills/*.md...")
-    completed_sections = await pipeline.run_all_category_agents(routed_stories)
+    # 3. Этап 2: Независимые отраслевые агенты (параллельно, каждый со своим skill-файлом)
+    logger.info(
+        "Этап 2/3: Запуск %d независимых отраслевых агентов (%s)...",
+        num_cats,
+        config.llm.model,
+    )
+    completed_sections = await pipeline.run_all_category_agents(routed_items)
+    total_topics = sum(s.stories_count for s in completed_sections)
 
     # 4. Этап 3: Финальный мета-агент для поиска межкатегорийных связей
     logger.info("Этап 3/3: Поиск сквозных межкатегорийных связей и стратегических выводов...")
@@ -150,7 +113,7 @@ async def run_daily_pipeline(hours_override: int | None = None, dry_run: bool = 
         window_hours=lookback_hours,
         total_raw_telegram_posts=len(tg_items),
         total_raw_emails=len(email_items),
-        total_extracted_stories=total_stories,
+        total_extracted_stories=total_topics,
         sections=completed_sections,
         cross_links=cross_links,
     )
@@ -165,11 +128,11 @@ async def run_daily_pipeline(hours_override: int | None = None, dry_run: bool = 
         await send_telegram_bot_digest(config, brief, usage_stats)
         send_email_digest(config, brief, usage_stats)
 
-    # 7. Сохраняем структурированный JSON-дайджест дня (для будущего ежемесячного отчёта 1-го числа)
+    # 7. Сохраняем структурированный JSON-дайджест дня (+ автоочистка архивов старше 45 дней)
     save_daily_digest_json(config, brief)
 
     if config.general.save_local_markdown or dry_run:
-        save_markdown_file(brief, usage_stats)
+        save_markdown_file(brief, usage_stats, config=config)
 
     return 0
 
@@ -271,19 +234,19 @@ async def republish_latest_digest() -> int:
     await send_telegram_bot_digest(config, latest_brief, usage_stats)
     send_email_digest(config, latest_brief, usage_stats)
     save_daily_digest_json(config, latest_brief)
-    save_markdown_file(latest_brief, usage_stats)
+    save_markdown_file(latest_brief, usage_stats, config=config)
     return 0
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Новостной агент: ежедневная сводка (21:00 Алматы) и ежемесячный обзор трендов (1-го числа в 09:00)"
+        description="Новостной агент: ежедневная сводка (19:00 Алматы) и ежемесячный обзор трендов (1-го числа в 09:00)"
     )
     parser.add_argument(
         "--mode",
         choices=["daily", "monthly", "bookmarks"],
         default="daily",
-        help="Режим работы: 'daily' (за 24ч), 'monthly' (итоги месяца) или 'bookmarks' (синхронизация сохранённых заметок)",
+        help="Режим работы: 'daily' (за 24ч), 'monthly' (итоги месяца) или 'bookmarks' (синхронизация заметок и идей)",
     )
     parser.add_argument(
         "--hours",
@@ -303,11 +266,6 @@ def main() -> None:
         help="Собрать и проанализировать, сохранить локальный Markdown, но не отправлять в Telegram/Email",
     )
     parser.add_argument(
-        "--sync-schedule",
-        action="store_true",
-        help="Синхронизировать время запуска из config.yaml в .github/workflows/daily_brief.yml",
-    )
-    parser.add_argument(
         "--republish-latest",
         action="store_true",
         help="Повторно опубликовать последний сохранённый дайджест в Telegraph/Telegram/Email без вызова LLM",
@@ -315,24 +273,20 @@ def main() -> None:
     parser.add_argument(
         "--sync-bookmarks",
         action="store_true",
-        help="Обработать нажатия кнопки «📌 Сохранить в Базу Заметок» из Telegram и обновить страницу Базы Заметок ($0.00)",
+        help="Обработать нажатия кнопок сохранения новостей и идей из Telegram и обновить страницы ($0.00)",
     )
     parser.add_argument(
         "--listen-bot",
         action="store_true",
-        help="Запустить мгновенный обработчик кнопки «📌 Сохранить в Базу Заметок» в реальном времени ($0.00)",
+        help="Запустить локальный обработчик кнопок сохранения в реальном времени ($0.00)",
     )
     parser.add_argument(
         "--max-minutes",
         type=int,
         default=0,
-        help="Для --listen-bot: сколько минут работать до перезапуска (0 = бесконечно)",
+        help="Для --listen-bot: сколько минут работать до завершения (0 = бесконечно)",
     )
     args = parser.parse_args()
-
-    if args.sync_schedule:
-        sync_github_workflow_schedule()
-        sys.exit(0)
 
     if args.sync_bookmarks or args.mode == "bookmarks":
         config = load_config()

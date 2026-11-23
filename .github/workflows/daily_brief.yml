@@ -1,17 +1,12 @@
 name: Daily & Monthly News Brief
 
 on:
-  # Запуск осуществляется ровно по секундам через cron-job.org (workflow_dispatch),
-  # поэтому внутренний (задерживающийся) cron GitHub Actions отключён, чтобы не было дублирующих запусков.
-  # schedule:
-  #   - cron: "0 14 * * *"
-  #   - cron: "0 4 1 * *"
-
-  # Вызов по секундам через cron-job.org или вручную из вкладки Actions
+  # Запуск осуществляется ровно по секундам через cron-job.org (workflow_dispatch)
+  # или вручную из вкладки Actions.
   workflow_dispatch:
     inputs:
       mode:
-        description: "Режим запуска: daily (за 24ч) или monthly (итоги месяца)"
+        description: "Режим запуска: daily (за 24ч), monthly (итоги месяца) или bookmarks (синхронизация заметок)"
         required: false
         default: "daily"
         type: choice
@@ -40,21 +35,10 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install --upgrade pip -q
+          pip install -r requirements.txt -q
 
-      - name: Determine run mode (daily at 19:00 Almaty vs monthly on 1st at 09:00 Almaty)
-        id: detect_mode
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.mode }}" ]; then
-            echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event.schedule }}" = "0 4 1 * *" ]; then
-            echo "mode=monthly" >> "$GITHUB_OUTPUT"
-          else
-            echo "mode=daily" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Run News Agent (${{ steps.detect_mode.outputs.mode }})
+      - name: Run News Agent (${{ inputs.mode || 'daily' }})
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
@@ -64,24 +48,24 @@ jobs:
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           TELEGRAPH_ACCESS_TOKEN: ${{ secrets.TELEGRAPH_ACCESS_TOKEN }}
         run: |
-          python -m src.main --mode "${{ steps.detect_mode.outputs.mode }}"
+          python -m src.main --mode "${{ inputs.mode || 'daily' }}"
 
       - name: Upload Markdown Brief Artifact
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: news-brief-${{ steps.detect_mode.outputs.mode }}
+          name: news-brief-${{ inputs.mode || 'daily' }}
           path: output/*.md
           if-no-files-found: ignore
           retention-days: 90
 
-      - name: Save daily digest archive & token/cost history back to repository
+      - name: Save daily digest archive, bookmarks & token/cost history
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           mkdir -p data/daily_digests
           touch data/saved_bookmarks.json
-          git add data/usage_history.json data/daily_digests/ data/saved_bookmarks.json
+          git add -A data/usage_history.json data/daily_digests/ data/saved_bookmarks.json
           if ! git diff --staged --quiet; then
             git commit -m "chore: save digest archive, bookmarks and LLM usage stats [skip ci]"
             git pull --rebase origin "${GITHUB_REF_NAME}"

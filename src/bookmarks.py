@@ -537,7 +537,7 @@ async def publish_or_update_ideas_telegraph(config: AppConfig, store: BookmarksS
         if not token:
             return store.ideas_telegraph_url
 
-        title = f"💡 Моя база идей для автоматизации ({len(store.idea_items)})"
+        title = f"💡 Моя база идей: автоматизация и локализация ({len(store.idea_items)})"
         nodes = _build_ideas_telegraph_nodes(store)
 
         while len(json.dumps(nodes, ensure_ascii=False).encode("utf-8")) > 55_000 and len(nodes) > 10:

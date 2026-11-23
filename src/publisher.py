@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 def save_daily_digest_json(config: AppConfig, brief: DailyBrief) -> Path:
-    """Сохраняет структурированный ежедневный дайджест в data/daily_digests/YYYY-MM-DD.json."""
+    """Сохраняет структурированный ежедневный дайджест в data/daily_digests/YYYY-MM-DD.json и чистит старые архивы."""
     digests_dir = ROOT_DIR / config.general.daily_digests_dir
     digests_dir.mkdir(parents=True, exist_ok=True)
     filename = brief.generated_at.strftime("digest_%Y-%m-%d.json")
@@ -44,6 +44,25 @@ def save_daily_digest_json(config: AppConfig, brief: DailyBrief) -> Path:
         encoding="utf-8",
     )
     logger.info("Ежедневный дайджест сохранён в архив для месячного отчёта: %s", path)
+
+    # Автоматическая ротация старых JSON-дайджестов (по умолчанию старше 45 дней), чтобы репозиторий не раздувался
+    retention_days = max(35, config.general.daily_digests_retention_days)
+    cutoff_date = (datetime.now(timezone.utc) - timedelta(days=retention_days)).date()
+    pruned = 0
+    for old_file in digests_dir.glob("digest_*.json"):
+        m = re.match(r"digest_(\d{4}-\d{2}-\d{2})\.json$", old_file.name)
+        if not m:
+            continue
+        try:
+            file_date = datetime.strptime(m.group(1), "%Y-%m-%d").date()
+            if file_date < cutoff_date:
+                old_file.unlink()
+                pruned += 1
+        except Exception:
+            continue
+    if pruned:
+        logger.info("Автоочистка архива: удалено %d старых дайджестов (старше %d дней).", pruned, retention_days)
+
     return path
 
 
@@ -78,10 +97,19 @@ def load_recent_daily_digests(config: AppConfig, lookback_days: int | None = Non
 # ==============================================================================
 
 
+def _ideas_heading_for_section(sec: CompletedCategorySection, config: AppConfig | None = None) -> str:
+    if config is not None:
+        cat_cfg = config.get_category(sec.slug)
+        if cat_cfg and cat_cfg.ideas_section_title:
+            return cat_cfg.ideas_section_title
+    return "💡 Прикладные идеи"
+
+
 def _build_telegraph_nodes_for_section(
     sec: CompletedCategorySection,
     date_compact: str = "",
     bot_username: str = "",
+    config: AppConfig | None = None,
 ) -> list[dict[str, Any]]:
     nodes: list[dict[str, Any]] = []
     nodes.append({"tag": "h3", "children": [f"{sec.title} ({sec.stories_count})"]})
@@ -94,7 +122,11 @@ def _build_telegraph_nodes_for_section(
     if sec.report.category_overview:
         nodes.append({"tag": "blockquote", "children": [sec.report.category_overview]})
 
+    current_subsection = ""
     for idx, topic in enumerate(sec.report.topics, start=1):
+        if topic.subsection and topic.subsection != current_subsection:
+            current_subsection = topic.subsection
+            nodes.append({"tag": "h3", "children": [f"▪ {current_subsection}"]})
         nodes.append({"tag": "h4", "children": [f"{idx}. {topic.headline}"]})
 
         for para in topic.summary_paragraphs:
@@ -149,7 +181,7 @@ def _build_telegraph_nodes_for_section(
             nodes.append({"tag": "p", "children": footer_children})
 
     if sec.report.automation_ideas:
-        nodes.append({"tag": "h4", "children": ["💡 Прикладные идеи для автоматизации"]})
+        nodes.append({"tag": "h4", "children": [_ideas_heading_for_section(sec, config)]})
         for idea_idx, idea in enumerate(sec.report.automation_ideas, start=1):
             idea_children: list[Any] = [
                 {"tag": "strong", "children": [f"• {idea_idx}. {idea.title} ({idea.target_sector_or_process}): "]},
@@ -185,6 +217,7 @@ def _build_telegraph_nodes(
     bot_username: str = "",
     bookmarks_url: str = "",
     ideas_url: str = "",
+    config: AppConfig | None = None,
 ) -> list[dict[str, Any]]:
     nodes: list[dict[str, Any]] = []
     date_str = brief.generated_at.strftime("%d.%m.%Y %H:%M")
@@ -241,7 +274,14 @@ def _build_telegraph_nodes(
         nodes.append({"tag": "hr"})
 
     for sec in brief.sections:
-        nodes.extend(_build_telegraph_nodes_for_section(sec, date_compact=date_compact, bot_username=bot_username))
+        nodes.extend(
+            _build_telegraph_nodes_for_section(
+                sec,
+                date_compact=date_compact,
+                bot_username=bot_username,
+                config=config,
+            )
+        )
 
     if brief.cross_links and brief.cross_links.connections:
         nodes.append({"tag": "h3", "children": ["🔗 Межкатегорийные связи и стратегические выводы"]})
@@ -599,6 +639,7 @@ async def publish_to_telegraph(
         bot_username=bot_username,
         bookmarks_url=store.telegraph_url,
         ideas_url=store.ideas_telegraph_url,
+        config=config,
     )
     return await _publish_nodes_to_telegraph(config, base_title, nodes)
 
@@ -681,7 +722,7 @@ async def send_telegram_bot_digest(
             )
         if store.ideas_telegraph_url:
             body_lines.append(
-                f"💡 <b><a href=\"{html.escape(store.ideas_telegraph_url, quote=True)}\">МОЯ БАЗА ИДЕЙ АВТОМАТИЗАЦИИ ({len(store.idea_items)} шт.)</a></b>"
+                f"💡 <b><a href=\"{html.escape(store.ideas_telegraph_url, quote=True)}\">МОЯ БАЗА ИДЕЙ (АВТОМАТИЗАЦИЯ И ЛОКАЛИЗАЦИЯ) ({len(store.idea_items)} шт.)</a></b>"
             )
         body_lines.append("")
 
@@ -695,13 +736,14 @@ async def send_telegram_bot_digest(
         body_lines.append(f"• <b>{html.escape(sec.title)}</b>: {sec.stories_count} сюж.")
         for topic in sec.report.topics[:2]:
             first_src = topic.sources[0] if topic.sources else None
+            sub_prefix = f"[{html.escape(topic.subsection)}] " if topic.subsection else ""
             if first_src and first_src.url.startswith("http"):
                 body_lines.append(
-                    f"   — {html.escape(topic.headline)} "
+                    f"   — {sub_prefix}{html.escape(topic.headline)} "
                     f"(<a href=\"{html.escape(first_src.url, quote=True)}\">{html.escape(first_src.label)}</a>)"
                 )
             else:
-                body_lines.append(f"   — {html.escape(topic.headline)}")
+                body_lines.append(f"   — {sub_prefix}{html.escape(topic.headline)}")
         if len(sec.report.topics) > 2:
             body_lines.append(f"   <i>...и ещё {len(sec.report.topics) - 2} в полной версии</i>")
 
@@ -733,8 +775,8 @@ async def send_telegram_bot_digest(
             if "chat not found" in desc.lower():
                 logger.warning(
                     "Telegram вернул 'chat not found' для chat_id=%s! "
-                    "ОБЯЗАТЕЛЬНО откройте вашего бота в Telegram (https://t.me/dy_daily_news_digest_bot) "
-                    "и нажмите кнопку START (/start), после чего выполните: python -m src.main --republish-latest",
+                    "Откройте вашего бота в Telegram и нажмите START (/start), "
+                    "затем выполните: python -m src.main --republish-latest",
                     config.tg_chat_id,
                 )
             else:
@@ -800,7 +842,7 @@ async def send_monthly_telegram_bot_digest(
 # ==============================================================================
 
 
-def render_html_email(brief: DailyBrief, stats: UsageSummaryStats) -> str:
+def render_html_email(brief: DailyBrief, stats: UsageSummaryStats, config: AppConfig | None = None) -> str:
     """Генерирует адаптивное HTML-письмо со всеми категориями, источниками и таблицей стоимости."""
     date_str = brief.generated_at.strftime("%d.%m.%Y %H:%M")
     parts: list[str] = [
@@ -841,7 +883,13 @@ def render_html_email(brief: DailyBrief, stats: UsageSummaryStats) -> str:
         if sec.report.category_overview:
             parts.append(f"<div class='overview'>{html.escape(sec.report.category_overview)}</div>")
 
+        current_sub = ""
         for idx, topic in enumerate(sec.report.topics, start=1):
+            if topic.subsection and topic.subsection != current_sub:
+                current_sub = topic.subsection
+                parts.append(
+                    f"<h3 style='color:#1e40af;background:#f3f4f6;padding:6px 12px;border-radius:6px;margin-top:16px;'>▪ {html.escape(current_sub)}</h3>"
+                )
             parts.append(f"<h3>{idx}. {html.escape(topic.headline)}</h3>")
             for para in topic.summary_paragraphs:
                 parts.append(f"<p>{html.escape(para)}</p>")
@@ -865,7 +913,7 @@ def render_html_email(brief: DailyBrief, stats: UsageSummaryStats) -> str:
             parts.append("<hr style='border:none;border-top:1px solid #f3f4f6;margin:16px 0;'>")
 
         if sec.report.automation_ideas:
-            parts.append("<h3>💡 Прикладные идеи для автоматизации</h3>")
+            parts.append(f"<h3>{html.escape(_ideas_heading_for_section(sec, config))}</h3>")
             for idea in sec.report.automation_ideas:
                 parts.append(
                     "<div class='idea'>"
@@ -951,7 +999,7 @@ def send_email_digest(config: AppConfig, brief: DailyBrief, stats: UsageSummaryS
     msg["Date"] = formatdate(localtime=True)
     msg["Message-ID"] = make_msgid(domain="gmail.com")
 
-    html_body = render_html_email(brief, stats)
+    html_body = render_html_email(brief, stats, config=config)
     plain_fallback = (
         f"Ежедневная аналитическая сводка за {date_str}\n"
         f"Сюжетов: {brief.total_extracted_stories}\n\n"
@@ -993,7 +1041,7 @@ def send_monthly_email_digest(config: AppConfig, monthly: MonthlyBrief, stats: U
 # ==============================================================================
 
 
-def render_markdown_brief(brief: DailyBrief, stats: UsageSummaryStats) -> str:
+def render_markdown_brief(brief: DailyBrief, stats: UsageSummaryStats, config: AppConfig | None = None) -> str:
     date_str = brief.generated_at.strftime("%d.%m.%Y %H:%M")
     lines: list[str] = [
         f"# 📰 Ежедневная аналитическая сводка ({date_str})",
@@ -1021,8 +1069,13 @@ def render_markdown_brief(brief: DailyBrief, stats: UsageSummaryStats) -> str:
         lines.append(f"*{sec.report.category_overview}*")
         lines.append("")
 
+        current_sub = ""
         for idx, topic in enumerate(sec.report.topics, start=1):
-            lines.append(f"### {idx}. {topic.headline}")
+            if topic.subsection and topic.subsection != current_sub:
+                current_sub = topic.subsection
+                lines.append(f"### ▪ {current_sub}")
+                lines.append("")
+            lines.append(f"#### {idx}. {topic.headline}" if topic.subsection else f"### {idx}. {topic.headline}")
             for para in topic.summary_paragraphs:
                 lines.append(para)
                 lines.append("")
@@ -1043,7 +1096,7 @@ def render_markdown_brief(brief: DailyBrief, stats: UsageSummaryStats) -> str:
                 lines.append("")
 
         if sec.report.automation_ideas:
-            lines.append("### 💡 Прикладные идеи для автоматизации")
+            lines.append(f"### {_ideas_heading_for_section(sec, config)}")
             for idea in sec.report.automation_ideas:
                 lines.append(
                     f"- **{idea.title}** (*{idea.target_sector_or_process}*): "
@@ -1144,12 +1197,12 @@ def render_monthly_markdown(monthly: MonthlyBrief, stats: UsageSummaryStats) -> 
     return "\n".join(lines)
 
 
-def save_markdown_file(brief: DailyBrief, stats: UsageSummaryStats) -> Path:
+def save_markdown_file(brief: DailyBrief, stats: UsageSummaryStats, config: AppConfig | None = None) -> Path:
     out_dir = ROOT_DIR / "output"
     out_dir.mkdir(parents=True, exist_ok=True)
     filename = brief.generated_at.strftime("brief_%Y-%m-%d.md")
     path = out_dir / filename
-    path.write_text(render_markdown_brief(brief, stats), encoding="utf-8")
+    path.write_text(render_markdown_brief(brief, stats, config=config), encoding="utf-8")
     logger.info("Локальная копия отчёта сохранена: %s", path)
     return path
 

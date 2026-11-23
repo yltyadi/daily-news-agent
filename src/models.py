@@ -6,6 +6,13 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+class SourceRef(BaseModel):
+    """Ссылка на первоисточник для конкретного новостного сюжета."""
+
+    label: str = Field(description="Короткое понятное название источника, например: '@kursivm' или 'Email: Forbes KZ — «Тема»'")
+    url: str = Field(description="Прямой URL на пост в Telegram, письмо или статью")
+
+
 class RawItem(BaseModel):
     """Сырое сообщение из Telegram-канала или письмо из Gmail за последние 24 часа."""
 
@@ -17,11 +24,13 @@ class RawItem(BaseModel):
     published_at: datetime
     text: str
     external_links: list[str] = Field(default_factory=list)
+    extra_sources: list[SourceRef] = Field(default_factory=list)
+    is_priority: bool = False
+    priority_default_category: str = ""
 
 
 # ==============================================================================
 # Шаг 1: Легковесная маршрутизация (экономит ~95% выходных токенов на этапе 1!)
-# Полный исходный текст RawItem передаётся напрямую профильным агентам на Шаге 2.
 # ==============================================================================
 
 
@@ -30,14 +39,14 @@ class RouterItemClassification(BaseModel):
 
     raw_item_id: str = Field(description="ID исходного сообщения из входного списка")
     is_relevant_news: bool = Field(
-        description="True, если это содержательная новость/аналитика; False, если это реклама, спам, промо или бытовой мусор"
+        description=(
+            "True, если это содержательная новость, аналитика, закон, заявление госдеятеля, статистика или кейс; "
+            "False, если это реклама, промо, шоу-бизнес/развлечения, поздравление или бытовой мусор"
+        )
     )
     categories: list[str] = Field(
         default_factory=list,
-        description=(
-            "1 или 2 подходящие категории (slug): "
-            "energetika, voda, it, avtomatizatsiya, finansy, nalogi, yuridicheskie, svyaz_transport"
-        ),
+        description="Предпочтительно 1 основная категория из списка в промпте (2 — только если новость явно относится к двум разным сферам)",
     )
 
 
@@ -52,16 +61,13 @@ class RouterBatchResponse(BaseModel):
 # ==============================================================================
 
 
-class SourceRef(BaseModel):
-    """Ссылка на первоисточник для конкретного новостного сюжета."""
-
-    label: str = Field(description="Короткое понятное название источника, например: '@kursivm' или 'Email: Forbes KZ — «Тема»'")
-    url: str = Field(description="Прямой URL на пост в Telegram, письмо или статью")
-
-
 class SynthesizedTopic(BaseModel):
     """Глубоко проработанный сюжет внутри одной категории."""
 
+    subsection: str = Field(
+        default="",
+        description="Подраздел категории, если он задан в промпте для данной категории; иначе пустая строка.",
+    )
     headline: str = Field(description="Заголовок сюжета")
     summary_paragraphs: list[str] = Field(
         description="Подробное изложение сути, контекста и всех деталей (1–3 абзаца без потери фактов)"
@@ -85,12 +91,12 @@ class SynthesizedTopic(BaseModel):
 
 
 class AutomationIdea(BaseModel):
-    """Прикладная идея для автоматизации (специально для категории «Автоматизация»)."""
+    """Прикладная идея для автоматизации или локализации производства в РК."""
 
-    title: str = Field(description="Название идеи или решения")
-    target_sector_or_process: str = Field(description="Где применить (завод, ЖКХ, энергетика, склад, документооборот и т.д.)")
-    proposed_solution: str = Field(description="Что именно внедрить (SCADA/IIoT, комп. зрение, ERP-модуль, AI-агент и т.д.)")
-    expected_impact: str = Field(description="Какой бизнес-эффект или экономию это даст")
+    title: str = Field(description="Название идеи, решения или производственной ниши")
+    target_sector_or_process: str = Field(description="Где применить (завод, ЖКХ, энергетика, отрасль/рынок в РК и т.д.)")
+    proposed_solution: str = Field(description="Что именно внедрить или локализовать (технология, продукт, офтейк-механизм и т.д.)")
+    expected_impact: str = Field(description="Какой бизнес-эффект, экономию или рыночный потенциал это даст")
     inspired_by_source: str = Field(description="На основе какого кейса/новости предложена идея")
 
 
@@ -106,7 +112,7 @@ class CategoryAgentResponse(BaseModel):
     )
     automation_ideas: list[AutomationIdea] = Field(
         default_factory=list,
-        description="Заполняется для категории «Автоматизация»: конкретные идеи внедрения на основе новостей",
+        description="Заполняется для категорий «Автоматизация» и «Локализация и производство в РК»: конкретные прикладные идеи на основе новостей",
     )
 
 
@@ -126,7 +132,7 @@ class CrossCategoryConnection(BaseModel):
         description="Подробное объяснение взаимосвязи, цепной реакции или системного тренда с опорой на факты дня"
     )
     actionable_takeaway: str = Field(
-        description="Практический вывод, идея для бизнеса/инвестиций/автоматизации или предупреждение о риске"
+        description="Практический вывод, идея для бизнеса/инвестиций/автоматизации/локализации или предупреждение о риске"
     )
     sources: list[SourceRef] = Field(
         default_factory=list,
@@ -138,7 +144,7 @@ class CrossLinksAgentResponse(BaseModel):
     """Ответ финального мета-аналитика по связям между категориями."""
 
     executive_summary: str = Field(
-        description="Общая картина дня в 3–4 предложениях: главный вектор событий за сутки"
+        description="Общая картина дня в 3–4 предложениях: главный вектор событий за сутки (включая ключевые заявления Президента/Правительства РК)"
     )
     connections: list[CrossCategoryConnection] = Field(
         default_factory=list,
@@ -201,11 +207,11 @@ class MonthlyCategoryTrend(BaseModel):
 class MonthlyAgentResponse(BaseModel):
     month_label: str = Field(description="Название периода, например: 'Итоги за последние 30 дней'")
     executive_macro_overview: str = Field(
-        description="Масштабная картина месяца (3–4 абзаца): главные макроэкономические, регуляторные, инфраструктурные и технологические сдвиги"
+        description="Масштабная картина месяца (3–4 абзаца): главные политические, макроэкономические, производственные, регуляторные и технологические сдвиги"
     )
     category_trends: list[MonthlyCategoryTrend] = Field(
         default_factory=list,
-        description="Подробный разбор трендов и главных событий месяца по каждой из 8 категорий",
+        description="Подробный разбор трендов и главных событий месяца по каждой категории",
     )
     cross_category_structural_shifts: list[CrossCategoryConnection] = Field(
         default_factory=list,
@@ -213,7 +219,7 @@ class MonthlyAgentResponse(BaseModel):
     )
     top_automation_and_business_ideas: list[AutomationIdea] = Field(
         default_factory=list,
-        description="Топ прикладных идей для автоматизации и бизнеса по итогам месяца",
+        description="Топ прикладных идей для автоматизации, локализации и бизнеса по итогам месяца",
     )
     watch_next_month: list[str] = Field(
         default_factory=list,
