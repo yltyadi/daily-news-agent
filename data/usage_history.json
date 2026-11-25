@@ -1875,6 +1875,80 @@
           "cost_usd": 0.050119
         }
       }
+    },
+    {
+      "run_id": "run_20261125_140513",
+      "timestamp_utc": "2026-11-25T14:05:13.973880+00:00",
+      "model": "gemini-3.1-flash-lite + gemini-3.8-flash",
+      "calls_count": 25,
+      "input_tokens": 443990,
+      "output_tokens": 103825,
+      "thinking_tokens": 0,
+      "cached_tokens": 0,
+      "total_tokens": 547815,
+      "cost_usd": 0.608341,
+      "stage_breakdown": {
+        "1_router_classifier": {
+          "calls": 11,
+          "tokens": 161855,
+          "cost_usd": 0.064082
+        },
+        "2_category_voda": {
+          "calls": 1,
+          "tokens": 9838,
+          "cost_usd": 0.015157
+        },
+        "2_category_avtomatizatsiya": {
+          "calls": 1,
+          "tokens": 10217,
+          "cost_usd": 0.020326
+        },
+        "2_category_lokalizatsiya": {
+          "calls": 1,
+          "tokens": 18127,
+          "cost_usd": 0.029138
+        },
+        "2_category_energetika": {
+          "calls": 1,
+          "tokens": 30241,
+          "cost_usd": 0.041668
+        },
+        "2_category_it": {
+          "calls": 1,
+          "tokens": 16704,
+          "cost_usd": 0.031044
+        },
+        "2_category_nalogi": {
+          "calls": 1,
+          "tokens": 10884,
+          "cost_usd": 0.019989
+        },
+        "2_category_svyaz_transport": {
+          "calls": 1,
+          "tokens": 15681,
+          "cost_usd": 0.02527
+        },
+        "2_category_politika": {
+          "calls": 2,
+          "tokens": 98065,
+          "cost_usd": 0.124131
+        },
+        "2_category_yuridicheskie": {
+          "calls": 2,
+          "tokens": 61536,
+          "cost_usd": 0.090174
+        },
+        "2_category_finansy": {
+          "calls": 2,
+          "tokens": 58223,
+          "cost_usd": 0.096407
+        },
+        "3_cross_links_meta": {
+          "calls": 1,
+          "tokens": 56444,
+          "cost_usd": 0.050955
+        }
+      }
     }
   ]
 }
